@@ -22,4 +22,5 @@
 
 ### 3. Настройка сервера
 Для работы бота вам понадобится сервер или хостинг, который будет обрабатывать запросы. Вы можете использовать:
-- Python с библиотеками python-telegram-bot и vk_api и
+- Python с библиотеками python-telegram-bot и vk_api и python-dotenv.
+все они есть в файле requirements.txt
