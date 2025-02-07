@@ -185,21 +185,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_dialogs(update, context)
 
 async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список диалогов с последними сообщениями"""
+    """Показывает список диалогов в виде нумерованного списка"""
     dialogs = dialog_manager.get_dialogs()
     if not dialogs:
         await update.message.reply_text("🤷 Нет активных диалогов")
         return
 
-    keyboard = []
-    for user_id, dialog in dialogs:
+    # Формируем текст сообщения
+    message_text = "📋 Последние диалоги:\n\n"
+    for i, (user_id, dialog) in enumerate(dialogs, 1):
         user = dialog['info']
-        btn_text = (f"{user.get('first_name', '?')} {user.get('last_name', '?')}\n"
-                    f"Последнее: {dialog['last_msg']}")
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"select_{user_id}")])
+        message_text += (
+            f"{i}. {user.get('first_name', '?')} {user.get('last_name', '?')}\n"
+            f"   └ {dialog['last_msg']}\n\n"
+        )
+
+    # Создаем клавиатуру только с именами
+    keyboard = [
+        [InlineKeyboardButton(
+            f"{dialog['info'].get('first_name', '?')} {dialog['info'].get('last_name', '?')}", 
+            callback_data=f"select_{user_id}"
+        )]
+        for user_id, dialog in dialogs
+    ]
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📋 Последние диалоги:", reply_markup=reply_markup)
+    await update.message.reply_text(message_text.strip(), reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия на кнопки"""
