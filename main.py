@@ -23,6 +23,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Отключаем логи httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
 load_dotenv()
 
 # Конфигурация
