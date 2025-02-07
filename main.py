@@ -11,10 +11,14 @@ import time
 import requests
 import logging
 
-# Настройка логов
+# Настройка логирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("logs.txt"),  # Логи в файл
+        logging.StreamHandler()           # Логи в консоль
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -35,44 +39,6 @@ if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM
 vk_session = vk_api.VkApi(token=VK_USER_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
-
-# Менеджер данных
-class DialogManager:
-    def __init__(self):
-        self.dialogs = OrderedDict()
-        self.selected_dialogs = {}
-        self.lock = threading.Lock()
-
-    def update_dialog(self, user_id, message, attachments=None):
-        with self.lock:
-            # Обновление порядка диалогов
-            if user_id in self.dialogs:
-                self.dialogs.move_to_end(user_id)
-            else:
-                # Ограничение количества диалогов
-                if len(self.dialogs) >= MAX_DIALOGS:
-                    self.dialogs.popitem(last=False)
-                
-                self.dialogs[user_id] = {
-                    'info': get_user_info(user_id),
-                    'last_msg': message,
-                    'attachments': attachments or [],
-                    'time': time.time()
-                }
-
-    def get_dialogs(self):
-        with self.lock:
-            return list(self.dialogs.items())
-    
-    def select_dialog(self, telegram_user_id, vk_user_id):
-        with self.lock:
-            self.selected_dialogs[telegram_user_id] = vk_user_id
-
-    def get_selected(self, telegram_user_id):
-        with self.lock:
-            return self.selected_dialogs.get(telegram_user_id)
-
-dialog_manager = DialogManager()
 
 # Утилиты
 def get_user_info(user_id):
@@ -98,6 +64,70 @@ def download_file(url):
     except Exception as e:
         logger.error(f"Ошибка загрузки файла: {e}")
     return None
+
+def save_last_dialog(telegram_user_id, vk_user_id):
+    """Сохраняет ID последнего выбранного диалога в файл"""
+    try:
+        with open("dialog.txt", "w") as file:
+            file.write(f"{telegram_user_id}:{vk_user_id}")
+        logger.info(f"Сохранен последний диалог: {telegram_user_id} -> {vk_user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения диалога: {e}")
+
+def load_last_dialog():
+    """Загружает ID последнего выбранного диалога из файла"""
+    try:
+        with open("dialog.txt", "r") as file:
+            data = file.read().strip()
+            if data:
+                telegram_user_id, vk_user_id = data.split(":")
+                return int(telegram_user_id), int(vk_user_id)
+    except FileNotFoundError:
+        logger.info("Файл dialog.txt не найден, создан новый.")
+    except Exception as e:
+        logger.error(f"Ошибка загрузки диалога: {e}")
+    return None, None
+
+# Менеджер диалогов
+class DialogManager:
+    def __init__(self):
+        self.dialogs = OrderedDict()
+        self.selected_dialogs = {}
+        self.lock = threading.Lock()
+        
+        # Загрузка последнего диалога при инициализации
+        telegram_user_id, vk_user_id = load_last_dialog()
+        if telegram_user_id and vk_user_id:
+            self.selected_dialogs[telegram_user_id] = vk_user_id
+
+    def update_dialog(self, user_id, message, attachments=None):
+        with self.lock:
+            if user_id in self.dialogs:
+                self.dialogs.move_to_end(user_id)
+            else:
+                if len(self.dialogs) >= MAX_DIALOGS:
+                    self.dialogs.popitem(last=False)
+                self.dialogs[user_id] = {
+                    'info': get_user_info(user_id),
+                    'last_msg': message,
+                    'attachments': attachments or [],
+                    'time': time.time()
+                }
+
+    def get_dialogs(self):
+        with self.lock:
+            return list(self.dialogs.items())
+    
+    def select_dialog(self, telegram_user_id, vk_user_id):
+        with self.lock:
+            self.selected_dialogs[telegram_user_id] = vk_user_id
+            save_last_dialog(telegram_user_id, vk_user_id)
+
+    def get_selected(self, telegram_user_id):
+        with self.lock:
+            return self.selected_dialogs.get(telegram_user_id)
+
+dialog_manager = DialogManager()
 
 # Обработчики VK
 def vk_listener(loop):
@@ -207,7 +237,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Добавляем подпись к тексту
-        signature = "\n\n(отправлено через bwvktg_bot)"
+        signature = "\n\n(отправлено с помощью tg bota)"
         
         # Отправка текста
         if update.message.text:
