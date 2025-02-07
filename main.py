@@ -10,6 +10,7 @@ from collections import OrderedDict
 import time
 import requests
 import logging
+import json
 
 # Настройка логирования
 logging.basicConfig(
@@ -152,29 +153,43 @@ async def forward_to_telegram(user_id, text, attachments):
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
+        # Отправка текста
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=f"{dialog_info}:\n{text}"
         )
 
+        # Отправка вложений
         for attach in attachments:
+            logger.info(f"Тип вложения: {attach['type']}")
+            logger.debug(f"Структура вложения: {json.dumps(attach, indent=2)}")
+
             if attach['type'] == 'photo':
-                photo_url = max(attach['photo']['sizes'], key=lambda x: x['width'])['url']
-                await application.bot.send_photo(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    photo=photo_url,
-                    caption=dialog_info
-                )
+                if 'sizes' in attach['photo']:
+                    photo = max(attach['photo']['sizes'], key=lambda x: x['width'])
+                    photo_url = photo['url']
+                    logger.info(f"Отправляем фото: {photo_url}")
+                    await application.bot.send_photo(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        photo=photo_url,
+                        caption=dialog_info
+                    )
+                else:
+                    logger.error("Некорректная структура фото-вложения")
+
             elif attach['type'] == 'doc':
-                doc_url = attach['doc']['url']
-                await application.bot.send_document(
-                    chat_id=TELEGRAM_CHAT_ID,
-                    document=doc_url,
-                    caption=dialog_info
-                )
+                if 'url' in attach['doc']:
+                    doc_url = attach['doc']['url']
+                    await application.bot.send_document(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        document=doc_url,
+                        caption=dialog_info
+                    )
+                else:
+                    logger.error("Некорректная структура документа")
 
     except Exception as e:
-        logger.error(f"Ошибка пересылки в Telegram: {e}")
+        logger.error(f"Ошибка пересылки в Telegram: {e}", exc_info=True)
 
 # Обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,7 +206,6 @@ async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🤷 Нет активных диалогов")
         return
 
-    # Формируем текст сообщения
     message_text = "📋 Последние диалоги:\n\n"
     for i, (user_id, dialog) in enumerate(dialogs, 1):
         user = dialog['info']
@@ -200,7 +214,6 @@ async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   └ {dialog['last_msg']}\n\n"
         )
 
-    # Создаем клавиатуру только с именами
     keyboard = [
         [InlineKeyboardButton(
             f"{dialog['info'].get('first_name', '?')} {dialog['info'].get('last_name', '?')}", 
@@ -292,7 +305,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("✅ Голосовое сообщение отправлено")
 
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
+        logger.error(f"Ошибка отправки: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 def main():
