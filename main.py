@@ -16,8 +16,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("logs.txt"),  # Логи в файл
-        logging.StreamHandler()           # Логи в консоль
+        logging.FileHandler("logs.txt"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -29,11 +29,12 @@ VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
+MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "\n\n(отправлено с помощью tg bota)")
 MAX_DIALOGS = 10
 
-# Проверка конфигурации
+# Проверка переменных окружения
 if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM_USER_ID]):
-    raise ValueError("Не все переменные окружения заданы в .env!")
+    raise ValueError("Не все обязательные переменные окружения заданы в .env!")
 
 # Инициализация VK
 vk_session = vk_api.VkApi(token=VK_USER_TOKEN)
@@ -95,7 +96,6 @@ class DialogManager:
         self.selected_dialogs = {}
         self.lock = threading.Lock()
         
-        # Загрузка последнего диалога при инициализации
         telegram_user_id, vk_user_id = load_last_dialog()
         if telegram_user_id and vk_user_id:
             self.selected_dialogs[telegram_user_id] = vk_user_id
@@ -109,7 +109,7 @@ class DialogManager:
                     self.dialogs.popitem(last=False)
                 self.dialogs[user_id] = {
                     'info': get_user_info(user_id),
-                    'last_msg': message,
+                    'last_msg': (message[:50] + '...') if len(message) > 50 else message,
                     'attachments': attachments or [],
                     'time': time.time()
                 }
@@ -152,13 +152,11 @@ async def forward_to_telegram(user_id, text, attachments):
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
-        # Отправка текста
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=f"{dialog_info}:\n{text}"
         )
 
-        # Отправка вложений
         for attach in attachments:
             if attach['type'] == 'photo':
                 photo_url = max(attach['photo']['sizes'], key=lambda x: x['width'])['url']
@@ -187,7 +185,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_dialogs(update, context)
 
 async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список диалогов с инлайн-клавиатурой"""
+    """Показывает список диалогов с последними сообщениями"""
     dialogs = dialog_manager.get_dialogs()
     if not dialogs:
         await update.message.reply_text("🤷 Нет активных диалогов")
@@ -196,11 +194,12 @@ async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for user_id, dialog in dialogs:
         user = dialog['info']
-        btn_text = f"{user.get('first_name', '?')} {user.get('last_name', '?')}"
+        btn_text = (f"{user.get('first_name', '?')} {user.get('last_name', '?')}\n"
+                    f"Последнее: {dialog['last_msg']}")
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"select_{user_id}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📋 Выберите диалог:", reply_markup=reply_markup)
+    await update.message.reply_text("📋 Последние диалоги:", reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия на кнопки"""
@@ -236,10 +235,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Добавляем подпись к тексту
-        signature = "\n\n(отправлено с помощью tg bota)"
+        signature = MESSAGE_SIGNATURE
         
-        # Отправка текста
         if update.message.text:
             message_text = update.message.text + signature
             vk.messages.send(
@@ -249,7 +246,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text("✅ Сообщение отправлено")
 
-        # Обработка медиа
         elif update.message.photo:
             photo = await update.message.photo[-1].get_file()
             filepath = download_file(photo.file_path)
@@ -260,7 +256,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vk.messages.send(
                     user_id=selected_vk_id,
                     attachment=attachment,
-                    message=signature.strip(),  # Подпись для фото
+                    message=signature.strip(),
                     random_id=0
                 )
                 await update.message.reply_text("✅ Фото отправлено")
@@ -279,7 +275,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 vk.messages.send(
                     user_id=selected_vk_id,
                     attachment=attachment,
-                    message=signature.strip(),  # Подпись для голосового
+                    message=signature.strip(),
                     random_id=0
                 )
                 await update.message.reply_text("✅ Голосовое сообщение отправлено")
@@ -292,17 +288,14 @@ def main():
     global application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.ALL, handle_message))
 
-    # Запуск VK listener
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
 
-    # Запуск бота
     logger.info("🤖 Бот запущен...")
     application.run_polling()
 
