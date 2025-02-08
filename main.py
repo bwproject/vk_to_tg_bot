@@ -202,6 +202,7 @@ async def forward_to_telegram(user_id, text, attachments):
             try:
                 logger.debug(f"Сырые данные вложения: {attach}")
 
+                # Преобразование строковых вложений
                 if isinstance(attach, str):
                     parsed = parse_vk_attachment(attach)
                     if parsed:
@@ -444,12 +445,14 @@ def main():
         .build()
     )
 
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.ALL, handle_message))
 
+    # Настройка JobQueue
     if application.job_queue:
         application.job_queue.run_repeating(
             callback=update_status_task,
@@ -459,6 +462,7 @@ def main():
     else:
         logger.warning("JobQueue недоступен! Автообновление статуса отключено")
 
+    # Запуск VK listener
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
     
