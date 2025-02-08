@@ -168,8 +168,13 @@ async def forward_to_telegram(user_id, text, attachments):
                 # Логируем структуру вложения для отладки
                 logger.debug(f"Структура вложения: {json.dumps(attach, ensure_ascii=False)}")
 
+                # Проверяем, что attach является словарем
+                if not isinstance(attach, dict):
+                    logger.warning(f"Неправильный формат вложения: {attach}")
+                    continue
+
                 # Обработка фото
-                if attach['type'] == 'photo':
+                if attach.get('type') == 'photo':
                     # Получаем фото с максимальным разрешением
                     photo = max(attach['photo']['sizes'], key=lambda x: x['width'])
                     photo_url = photo['url']
@@ -183,7 +188,7 @@ async def forward_to_telegram(user_id, text, attachments):
                     )
 
                 # Обработка документов
-                elif attach['type'] == 'doc':
+                elif attach.get('type') == 'doc':
                     doc_url = attach['doc']['url']
                     logger.info(f"Отправляем документ: {doc_url}")
                     
@@ -195,7 +200,7 @@ async def forward_to_telegram(user_id, text, attachments):
                     )
 
                 # Обработка голосовых сообщений
-                elif attach['type'] == 'audio_message':
+                elif attach.get('type') == 'audio_message':
                     audio_url = attach['audio_message']['link_ogg']
                     logger.info(f"Отправляем голосовое сообщение: {audio_url}")
                     
@@ -210,7 +215,7 @@ async def forward_to_telegram(user_id, text, attachments):
                             )
 
                 else:
-                    logger.warning(f"Неизвестный тип вложения: {attach['type']}")
+                    logger.warning(f"Неизвестный тип вложения: {attach.get('type')}")
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
