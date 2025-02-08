@@ -22,8 +22,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Отключаем логи httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv()
@@ -162,16 +160,33 @@ async def forward_to_telegram(user_id, text, attachments):
             text=f"{dialog_info}:\n{text}"
         )
 
-        # Отправка вложений
+        # Обработка вложений
         for attach in attachments:
             try:
-                # Проверяем тип вложения
-                if isinstance(attach, dict):
+                # Обработка строковых вложений (старый формат)
+                if isinstance(attach, str):
+                    parts = attach.split('_')
+                    if len(parts) >= 2:
+                        attach_type = parts[0]
+                        attach_id = '_'.join(parts[1:])
+                        logger.info(f"Обработка строкового вложения: {attach_type} {attach_id}")
+
+                        if attach_type == 'photo':
+                            photos = vk.photos.getById(photos=attach)
+                            if photos:
+                                photo = max(photos[0]['sizes'], key=lambda x: x['width'])
+                                await application.bot.send_photo(
+                                    chat_id=TELEGRAM_CHAT_ID,
+                                    photo=photo['url'],
+                                    caption=dialog_info
+                                )
+
+                # Обработка словарных вложений (новый формат)
+                elif isinstance(attach, dict):
                     attach_type = attach.get('type')
-                    logger.info(f"Тип вложения: {attach_type}")
-                    
+                    logger.info(f"Обработка словарного вложения: {attach_type}")
+
                     if attach_type == 'photo' and 'photo' in attach:
-                        # Обработка фото
                         photo_data = attach['photo']
                         if 'sizes' in photo_data:
                             photo = max(photo_data['sizes'], key=lambda x: x.get('width', 0))
@@ -180,19 +195,18 @@ async def forward_to_telegram(user_id, text, attachments):
                                 photo=photo['url'],
                                 caption=dialog_info
                             )
-                        
+
                     elif attach_type == 'doc' and 'doc' in attach:
-                        # Обработка документа
                         doc_data = attach['doc']
                         await application.bot.send_document(
                             chat_id=TELEGRAM_CHAT_ID,
                             document=doc_data.get('url'),
                             caption=dialog_info
                         )
-                        
+
                 else:
                     logger.warning(f"Неизвестный формат вложения: {type(attach)}")
-                    
+
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
 
@@ -208,7 +222,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_dialogs(update, context)
 
 async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список диалогов в виде нумерованного списка"""
+    """Показывает список диалогов"""
     dialogs = dialog_manager.get_dialogs()
     if not dialogs:
         await update.message.reply_text("🤷 Нет активных диалогов")
@@ -256,7 +270,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает все сообщения"""
+    """Обрабатывает сообщения из Telegram"""
     user_id = str(update.effective_user.id)
     if user_id != AUTHORIZED_TELEGRAM_USER_ID:
         return
