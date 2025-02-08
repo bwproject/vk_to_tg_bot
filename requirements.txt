@@ -1,3 +1,4 @@
 vk_api
 python-telegram-bot
 python-dotenv
+requests
