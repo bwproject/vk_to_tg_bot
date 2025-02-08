@@ -1,3 +1,6 @@
+Вот полный код с исправлениями для обработки вложений:
+
+```python
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -58,6 +61,27 @@ class BotStats:
         self.message_count = 0
 
 bot_stats = BotStats()
+
+def parse_vk_attachment(attach_str: str) -> dict:
+    """Парсит строковое представление вложения ВК"""
+    try:
+        parts = attach_str.split('_')
+        if len(parts) < 2:
+            return None
+            
+        attach_type = parts[0].replace("'", "")
+        owner_id = parts[1]
+        media_id = parts[2] if len(parts) > 2 else None
+
+        return {
+            'type': attach_type,
+            'owner_id': owner_id,
+            'id': media_id,
+            'url': f"https://vk.com/{attach_type}{owner_id}_{media_id}"
+        }
+    except Exception as e:
+        logger.error(f"Ошибка парсинга вложения: {e}")
+        return None
 
 def get_user_info(user_id):
     """Получает информацию о пользователе VK"""
@@ -166,44 +190,50 @@ def vk_listener(loop):
 async def forward_to_telegram(user_id, text, attachments):
     """Отправляет сообщение в Telegram"""
     try:
-        # Обновляем статистику
         bot_stats.last_message_time = datetime.now()
         bot_stats.message_count += 1
 
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
-        # Отправка текста
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=f"{dialog_info}:\n{text}"
         )
 
-        # Обработка вложений
         for attach in attachments:
             try:
-                logger.debug(f"Структура вложения: {json.dumps(attach, ensure_ascii=False)}")
+                logger.debug(f"Сырые данные вложения: {attach}")
+
+                if isinstance(attach, str):
+                    parsed = parse_vk_attachment(attach)
+                    if parsed:
+                        attach = parsed
+                    else:
+                        continue
 
                 if not isinstance(attach, dict):
-                    logger.warning(f"Неправильный формат вложения: {type(attach)}")
+                    logger.warning(f"Неподдерживаемый формат вложения: {type(attach)}")
                     continue
 
                 attach_type = attach.get('type')
+                logger.debug(f"Обработка вложения типа: {attach_type}")
 
-                # Обработка фото
                 if attach_type == 'photo':
                     photo_sizes = attach.get('photo', {}).get('sizes', [])
-                    if photo_sizes:
+                    if not photo_sizes:
+                        photo_url = attach.get('photo', {}).get('url')
+                    else:
                         photo = max(photo_sizes, key=lambda x: x.get('width', 0))
                         photo_url = photo.get('url')
-                        if photo_url:
-                            await application.bot.send_photo(
-                                chat_id=TELEGRAM_CHAT_ID,
-                                photo=photo_url,
-                                caption=dialog_info
-                            )
 
-                # Обработка документов
+                    if photo_url:
+                        await application.bot.send_photo(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            photo=photo_url,
+                            caption=dialog_info
+                        )
+
                 elif attach_type == 'doc':
                     doc_url = attach.get('doc', {}).get('url')
                     if doc_url:
@@ -213,7 +243,6 @@ async def forward_to_telegram(user_id, text, attachments):
                             caption=dialog_info
                         )
 
-                # Обработка голосовых сообщений
                 elif attach_type == 'audio_message':
                     audio_url = attach.get('audio_message', {}).get('link_ogg')
                     if audio_url:
@@ -228,6 +257,10 @@ async def forward_to_telegram(user_id, text, attachments):
 
                 else:
                     logger.warning(f"Необрабатываемый тип вложения: {attach_type}")
+                    await application.bot.send_message(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        text=f"{dialog_info}\n📎 Вложение типа {attach_type} не поддерживается"
+                    )
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
@@ -237,14 +270,12 @@ async def forward_to_telegram(user_id, text, attachments):
 
 # Обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
         await update.message.reply_text("⛔ Доступ запрещен")
         return
     await show_dialogs(update, context)
 
 async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список диалогов"""
     dialogs = dialog_manager.get_dialogs()
     if not dialogs:
         await update.message.reply_text("🤷 Нет активных диалогов")
@@ -270,7 +301,6 @@ async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message_text.strip(), reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия на кнопки"""
     query = update.callback_query
     await query.answer()
 
@@ -292,7 +322,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает сообщения из Telegram"""
     user_id = str(update.effective_user.id)
     if user_id != AUTHORIZED_TELEGRAM_USER_ID:
         return
@@ -353,7 +382,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 def set_vk_status(text):
-    """Устанавливает статус в VK"""
     try:
         vk.status.set(text=text)
         logger.info(f"Статус обновлен: {text}")
@@ -363,7 +391,6 @@ def set_vk_status(text):
         return False
 
 async def send_stats(update: Update):
-    """Отправляет статистику работы"""
     current_time = datetime.now(pytz.timezone('Europe/Moscow'))
     uptime = datetime.now() - bot_stats.start_time
     days = uptime.days
@@ -382,7 +409,6 @@ async def send_stats(update: Update):
     await update.message.reply_text(stats_text)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /stats"""
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
         await update.message.reply_text("⛔ Доступ запрещен")
         return
@@ -390,55 +416,54 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_stats(update)
 
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
-    """Фоновая задача для автообновления статуса"""
-    while True:
-        try:
-            current_time = datetime.now(pytz.timezone('Europe/Moscow'))
-            uptime = datetime.now() - bot_stats.start_time
-            days = uptime.days
-            hours, remainder = divmod(uptime.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            
-            status_text = (
-                f"⌛ Бот работает: {days}д {hours}ч {minutes}м | "
-                f"📨 Сообщений: {bot_stats.message_count} | "
-                f"🕒 Последнее: {current_time.strftime('%H:%M')} | "
-                f"@tgvktg_bot"
-            )
-            
-            if set_vk_status(status_text):
-                logger.info("Статус ВК успешно обновлен")
-            else:
-                logger.warning("Не удалось обновить статус ВК")
-                
-        except Exception as e:
-            logger.error(f"Ошибка в задаче обновления статуса: {e}")
+    try:
+        current_time = datetime.now(pytz.timezone('Europe/Moscow'))
+        uptime = datetime.now() - bot_stats.start_time
+        days = uptime.days
+        hours, remainder = divmod(uptime.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
         
-        await asyncio.sleep(900)  # 15 минут
+        status_text = (
+            f"⌛ Бот работает: {days}д {hours}ч {minutes}м | "
+            f"📨 Сообщений: {bot_stats.message_count} | "
+            f"🕒 Последнее: {current_time.strftime('%H:%M')} | "
+            f"@tgvktg_bot"
+        )
+        
+        if set_vk_status(status_text):
+            logger.info("Статус ВК успешно обновлен")
+        else:
+            logger.warning("Не удалось обновить статус ВК")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в задаче обновления статуса: {e}")
 
 def main():
     global application
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .arbitrary_callback_data(True)
+        .build()
+    )
 
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.ALL, handle_message))
 
-    # Запуск фоновых задач
-    application.job_queue.run_once(
-        callback=lambda context: asyncio.create_task(update_status_task(context)), 
-        when=0
-    )
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            callback=update_status_task,
+            interval=900,
+            first=10
+        )
+    else:
+        logger.warning("JobQueue недоступен! Автообновление статуса отключено")
 
-    # Запуск VK listener в отдельном потоке
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
-
-    # Первоначальная установка статуса
-    asyncio.run_coroutine_threadsafe(update_status_task(None), loop)
     
     logger.info("🤖 Бот запущен...")
     application.run_polling()
