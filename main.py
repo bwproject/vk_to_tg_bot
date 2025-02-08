@@ -12,6 +12,7 @@ import requests
 import logging
 import json
 from datetime import datetime, timedelta
+import pytz
 
 # Настройка логирования
 logging.basicConfig(
@@ -35,7 +36,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
 MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "\n\n(отправлено с помощью tg bota)")
-STATUS_TEXT = os.getenv("STATUS_TEXT", "Использует @tgvktg_bot")
 MAX_DIALOGS = 10
 
 # Проверка переменных окружения
@@ -364,14 +364,18 @@ def set_vk_status(text):
 
 async def send_stats(update: Update):
     """Отправляет статистику работы"""
-    current_time = datetime.now()
-    uptime = current_time - bot_stats.start_time
-    last_msg = bot_stats.last_message_time.strftime("%d.%m.%Y %H:%M:%S") if bot_stats.last_message_time else "еще нет"
+    current_time = datetime.now(pytz.timezone('Europe/Moscow'))
+    uptime = datetime.now() - bot_stats.start_time
+    days = uptime.days
+    hours, remainder = divmod(uptime.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    
+    last_msg_time = bot_stats.last_message_time.astimezone(pytz.timezone('Europe/Moscow')).strftime("%H:%M") if bot_stats.last_message_time else "еще нет"
     
     stats_text = (
         "📊 Статистика работы бота:\n"
-        f"⏱ Время работы: {str(uptime).split('.')[0]}\n"
-        f"📅 Последнее сообщение: {last_msg}\n"
+        f"⏱ Время работы: {days}д {hours}ч {minutes}м\n"
+        f"🕒 Последнее сообщение: {last_msg_time}\n"
         f"✉ Всего сообщений: {bot_stats.message_count}"
     )
     
@@ -385,33 +389,56 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await send_stats(update)
 
-async def set_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /set_status"""
-    if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
-        await update.message.reply_text("⛔ Доступ запрещен")
-        return
-    
-    if set_vk_status(STATUS_TEXT):
-        await update.message.reply_text("✅ Статус ВК обновлен!")
-    else:
-        await update.message.reply_text("❌ Не удалось обновить статус")
+async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
+    """Фоновая задача для автообновления статуса"""
+    while True:
+        try:
+            current_time = datetime.now(pytz.timezone('Europe/Moscow'))
+            uptime = datetime.now() - bot_stats.start_time
+            days = uptime.days
+            hours, remainder = divmod(uptime.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            
+            status_text = (
+                f"⌛ Бот работает: {days}д {hours}ч {minutes}м | "
+                f"📨 Сообщений: {bot_stats.message_count} | "
+                f"🕒 Последнее: {current_time.strftime('%H:%M')} | "
+                f"@tgvktg_bot"
+            )
+            
+            if set_vk_status(status_text):
+                logger.info("Статус ВК успешно обновлен")
+            else:
+                logger.warning("Не удалось обновить статус ВК")
+                
+        except Exception as e:
+            logger.error(f"Ошибка в задаче обновления статуса: {e}")
+        
+        await asyncio.sleep(900)  # 15 минут
 
 def main():
     global application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
     application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("set_status", set_status))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.ALL, handle_message))
 
+    # Запуск фоновых задач
+    application.job_queue.run_once(
+        callback=lambda context: asyncio.create_task(update_status_task(context)), 
+        when=0
+    )
+
+    # Запуск VK listener в отдельном потоке
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
 
-    # Устанавливаем статус при запуске
-    set_vk_status(STATUS_TEXT)
+    # Первоначальная установка статуса
+    asyncio.run_coroutine_threadsafe(update_status_task(None), loop)
     
     logger.info("🤖 Бот запущен...")
     application.run_polling()
