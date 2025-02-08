@@ -87,33 +87,37 @@ async def forward_to_telegram(user_id, text, attachments):
         if not attachments:
             return
 
-        if isinstance(attachments, str):
-            # Вложения пришли в виде ссылки, отправляем как текст
-            await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🔗 Вложение: https://vk.com/{attachments}")
-            return
+        # Если VK прислал словарь вида {'attach1_type': 'photo', 'attach1': '124078406_457262725'}
+        if isinstance(attachments, dict):
+            processed_attachments = []
+            for key, value in attachments.items():
+                if key.endswith("_type"):
+                    attach_type = value
+                    attach_id_key = key.replace("_type", "")
+                    attach_id = attachments.get(attach_id_key)
 
+                    if attach_type and attach_id:
+                        processed_attachments.append({"type": attach_type, "id": attach_id})
+
+            attachments = processed_attachments
+
+        # Обработка вложений
         for attach in attachments:
             try:
-                if isinstance(attach, str):
-                    await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🔗 Вложение: https://vk.com/{attach}")
-                    continue
+                if attach["type"] == "photo":
+                    photo_url = f"https://vk.com/photo{attach['id']}"
+                    await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🖼 Фото: {photo_url}")
 
-                if attach.get('type') == 'photo':
-                    photo = max(attach['photo']['sizes'], key=lambda x: x['width'])
-                    await application.bot.send_photo(TELEGRAM_CHAT_ID, photo=photo['url'])
+                elif attach["type"] == "doc":
+                    doc_url = f"https://vk.com/doc{attach['id']}"
+                    await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"📎 Документ: {doc_url}")
 
-                elif attach.get('type') == 'doc':
-                    await application.bot.send_document(TELEGRAM_CHAT_ID, document=attach['doc']['url'])
-
-                elif attach.get('type') == 'audio_message':
-                    audio_url = attach['audio_message']['link_ogg']
-                    filepath = download_file(audio_url)
-                    if filepath:
-                        with open(filepath, 'rb') as audio_file:
-                            await application.bot.send_voice(TELEGRAM_CHAT_ID, voice=audio_file)
+                elif attach["type"] == "audio_message":
+                    voice_url = f"https://vk.com/audio_message{attach['id']}"
+                    await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🎙 Голосовое сообщение: {voice_url}")
 
                 else:
-                    logger.warning(f"Неизвестный тип вложения: {attach.get('type')}")
+                    await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🔗 Вложение: https://vk.com/{attach['type']}{attach['id']}")
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {e}", exc_info=True)
