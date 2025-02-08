@@ -22,6 +22,8 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Отключаем логи httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv()
@@ -163,49 +165,52 @@ async def forward_to_telegram(user_id, text, attachments):
         # Обработка вложений
         for attach in attachments:
             try:
-                # Обработка строковых вложений (старый формат)
-                if isinstance(attach, str):
-                    parts = attach.split('_')
-                    if len(parts) >= 2:
-                        attach_type = parts[0]
-                        attach_id = '_'.join(parts[1:])
-                        logger.info(f"Обработка строкового вложения: {attach_type} {attach_id}")
+                # Логируем структуру вложения для отладки
+                logger.debug(f"Структура вложения: {json.dumps(attach, ensure_ascii=False)}")
 
-                        if attach_type == 'photo':
-                            photos = vk.photos.getById(photos=attach)
-                            if photos:
-                                photo = max(photos[0]['sizes'], key=lambda x: x['width'])
-                                await application.bot.send_photo(
-                                    chat_id=TELEGRAM_CHAT_ID,
-                                    photo=photo['url'],
-                                    caption=dialog_info
-                                )
+                # Обработка фото
+                if attach['type'] == 'photo':
+                    # Получаем фото с максимальным разрешением
+                    photo = max(attach['photo']['sizes'], key=lambda x: x['width'])
+                    photo_url = photo['url']
+                    logger.info(f"Отправляем фото: {photo_url}")
+                    
+                    # Отправляем фото в Telegram
+                    await application.bot.send_photo(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        photo=photo_url,
+                        caption=dialog_info
+                    )
 
-                # Обработка словарных вложений (новый формат)
-                elif isinstance(attach, dict):
-                    attach_type = attach.get('type')
-                    logger.info(f"Обработка словарного вложения: {attach_type}")
+                # Обработка документов
+                elif attach['type'] == 'doc':
+                    doc_url = attach['doc']['url']
+                    logger.info(f"Отправляем документ: {doc_url}")
+                    
+                    # Отправляем документ в Telegram
+                    await application.bot.send_document(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        document=doc_url,
+                        caption=dialog_info
+                    )
 
-                    if attach_type == 'photo' and 'photo' in attach:
-                        photo_data = attach['photo']
-                        if 'sizes' in photo_data:
-                            photo = max(photo_data['sizes'], key=lambda x: x.get('width', 0))
-                            await application.bot.send_photo(
+                # Обработка голосовых сообщений
+                elif attach['type'] == 'audio_message':
+                    audio_url = attach['audio_message']['link_ogg']
+                    logger.info(f"Отправляем голосовое сообщение: {audio_url}")
+                    
+                    # Скачиваем и отправляем голосовое сообщение
+                    filepath = download_file(audio_url)
+                    if filepath:
+                        with open(filepath, 'rb') as audio_file:
+                            await application.bot.send_voice(
                                 chat_id=TELEGRAM_CHAT_ID,
-                                photo=photo['url'],
+                                voice=audio_file,
                                 caption=dialog_info
                             )
 
-                    elif attach_type == 'doc' and 'doc' in attach:
-                        doc_data = attach['doc']
-                        await application.bot.send_document(
-                            chat_id=TELEGRAM_CHAT_ID,
-                            document=doc_data.get('url'),
-                            caption=dialog_info
-                        )
-
                 else:
-                    logger.warning(f"Неизвестный формат вложения: {type(attach)}")
+                    logger.warning(f"Неизвестный тип вложения: {attach['type']}")
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
