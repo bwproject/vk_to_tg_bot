@@ -1,6 +1,3 @@
-Вот полный код с исправлениями для обработки вложений:
-
-```python
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
