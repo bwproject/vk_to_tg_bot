@@ -204,9 +204,14 @@ async def forward_to_telegram(user_id, text, attachments):
 
                 # Преобразование строковых вложений
                 if isinstance(attach, str):
-                    parsed = parse_vk_attachment(attach)
+                    if attach.startswith('attach1'):
+                        parsed = parse_vk_attachment(attach.replace('attach1', 'photo'))
+                    else:
+                        parsed = parse_vk_attachment(attach)
+                    
                     if parsed:
                         attach = parsed
+                        logger.info(f"Преобразованное вложение: {parsed}")
                     else:
                         continue
 
@@ -217,13 +222,16 @@ async def forward_to_telegram(user_id, text, attachments):
                 attach_type = attach.get('type')
                 logger.debug(f"Обработка вложения типа: {attach_type}")
 
-                if attach_type == 'photo':
-                    photo_sizes = attach.get('photo', {}).get('sizes', [])
-                    if not photo_sizes:
-                        photo_url = attach.get('photo', {}).get('url')
+                if attach_type in ['photo', 'attach1']:
+                    if 'photo' in attach:
+                        photo_sizes = attach.get('photo', {}).get('sizes', [])
+                        if photo_sizes:
+                            photo = max(photo_sizes, key=lambda x: x.get('width', 0))
+                            photo_url = photo.get('url')
+                        else:
+                            photo_url = attach.get('photo', {}).get('url')
                     else:
-                        photo = max(photo_sizes, key=lambda x: x.get('width', 0))
-                        photo_url = photo.get('url')
+                        photo_url = f"https://vk.com/photo{attach['owner_id']}_{attach['id']}"
 
                     if photo_url:
                         await application.bot.send_photo(
@@ -444,7 +452,6 @@ def main():
         .arbitrary_callback_data(True)
         .build()
     )
-
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
