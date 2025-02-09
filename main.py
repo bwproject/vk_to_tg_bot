@@ -205,6 +205,7 @@ async def forward_to_telegram(user_id, text, attachments):
                 # Преобразование строковых вложений
                 if isinstance(attach, str):
                     if attach.startswith('attach1'):
+                        # Преобразуем attach1 в photo
                         parsed = parse_vk_attachment(attach.replace('attach1', 'photo'))
                     else:
                         parsed = parse_vk_attachment(attach)
@@ -222,6 +223,7 @@ async def forward_to_telegram(user_id, text, attachments):
                 attach_type = attach.get('type')
                 logger.debug(f"Обработка вложения типа: {attach_type}")
 
+                # Обработка фото и attach1
                 if attach_type in ['photo', 'attach1']:
                     if 'photo' in attach:
                         photo_sizes = attach.get('photo', {}).get('sizes', [])
@@ -231,6 +233,7 @@ async def forward_to_telegram(user_id, text, attachments):
                         else:
                             photo_url = attach.get('photo', {}).get('url')
                     else:
+                        # Если это строка attach1, формируем URL вручную
                         photo_url = f"https://vk.com/photo{attach['owner_id']}_{attach['id']}"
 
                     if photo_url:
@@ -240,6 +243,7 @@ async def forward_to_telegram(user_id, text, attachments):
                             caption=dialog_info
                         )
 
+                # Обработка документов
                 elif attach_type == 'doc':
                     doc_url = attach.get('doc', {}).get('url')
                     if doc_url:
@@ -249,6 +253,7 @@ async def forward_to_telegram(user_id, text, attachments):
                             caption=dialog_info
                         )
 
+                # Обработка голосовых сообщений
                 elif attach_type == 'audio_message':
                     audio_url = attach.get('audio_message', {}).get('link_ogg')
                     if audio_url:
@@ -273,7 +278,6 @@ async def forward_to_telegram(user_id, text, attachments):
 
     except Exception as e:
         logger.error(f"Ошибка пересылки в Telegram: {str(e)}", exc_info=True)
-
 # Обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
