@@ -42,7 +42,7 @@ MAX_DIALOGS = 10
 if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM_USER_ID]):
     raise ValueError("Не все обязательные переменные окружения заданы в .env!")
 
-# Инициализация VK с правами на статус
+# Инициализация VK
 vk_session = vk_api.VkApi(
     token=VK_USER_TOKEN,
     scope=65536  # status permission
@@ -71,17 +71,14 @@ def is_url_accessible(url):
 def parse_vk_attachment(attach_str: str) -> dict:
     """Парсит строковое представление вложения ВК"""
     try:
-        # Пример строки: "attach1_type_owner_id_id"
         parts = attach_str.split('_')
         if len(parts) < 3:
             return None
             
-        # Извлекаем тип, owner_id и id
-        attach_type = parts[1]  # type
-        owner_id = parts[2]     # owner_id
-        media_id = parts[3] if len(parts) > 3 else None  # id
+        attach_type = parts[1]
+        owner_id = parts[2]
+        media_id = parts[3] if len(parts) > 3 else None
 
-        # Формируем URL
         if attach_type == 'photo':
             url = f"https://vk.com/photo{owner_id}_{media_id}"
         else:
@@ -121,39 +118,12 @@ def download_file(url):
         logger.error(f"Ошибка загрузки файла: {e}")
     return None
 
-def save_last_dialog(telegram_user_id, vk_user_id):
-    """Сохраняет ID последнего выбранного диалога в файл"""
-    try:
-        with open("dialog.txt", "w") as file:
-            file.write(f"{telegram_user_id}:{vk_user_id}")
-        logger.info(f"Сохранен последний диалог: {telegram_user_id} -> {vk_user_id}")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения диалога: {e}")
-
-def load_last_dialog():
-    """Загружает ID последнего выбранного диалога из файла"""
-    try:
-        with open("dialog.txt", "r") as file:
-            data = file.read().strip()
-            if data:
-                telegram_user_id, vk_user_id = data.split(":")
-                return int(telegram_user_id), int(vk_user_id)
-    except FileNotFoundError:
-        logger.info("Файл dialog.txt не найден, создан новый.")
-    except Exception as e:
-        logger.error(f"Ошибка загрузки диалога: {e}")
-    return None, None
-
 # Менеджер диалогов
 class DialogManager:
     def __init__(self):
         self.dialogs = OrderedDict()
         self.selected_dialogs = {}
         self.lock = threading.Lock()
-        
-        telegram_user_id, vk_user_id = load_last_dialog()
-        if telegram_user_id and vk_user_id:
-            self.selected_dialogs[telegram_user_id] = vk_user_id
 
     def update_dialog(self, user_id, message, attachments=None):
         with self.lock:
@@ -176,7 +146,6 @@ class DialogManager:
     def select_dialog(self, telegram_user_id, vk_user_id):
         with self.lock:
             self.selected_dialogs[telegram_user_id] = vk_user_id
-            save_last_dialog(telegram_user_id, vk_user_id)
 
     def get_selected(self, telegram_user_id):
         with self.lock:
@@ -221,8 +190,6 @@ async def send_media_with_fallback(chat_id, media_type, url, caption):
                             caption=caption
                         )
                     os.remove(filepath)
-                else:
-                    logger.error(f"Не удалось загрузить фото: {url}")
         
         elif media_type == 'document':
             if is_url_accessible(url):
@@ -241,8 +208,6 @@ async def send_media_with_fallback(chat_id, media_type, url, caption):
                             caption=caption
                         )
                     os.remove(filepath)
-                else:
-                    logger.error(f"Не удалось загрузить документ: {url}")
         
         elif media_type == 'voice':
             filepath = download_file(url)
@@ -254,8 +219,6 @@ async def send_media_with_fallback(chat_id, media_type, url, caption):
                         caption=caption
                     )
                 os.remove(filepath)
-            else:
-                logger.error(f"Не удалось загрузить голосовое сообщение: {url}")
 
     except Exception as e:
         logger.error(f"Ошибка отправки медиа: {e}")
@@ -278,37 +241,18 @@ async def forward_to_telegram(user_id, text, attachments):
             try:
                 logger.debug(f"Сырые данные вложения: {attach}")
 
-                # Преобразование строковых вложений
-                if isinstance(attach, str):
-                    if attach.startswith('attach1'):
-                        parsed = parse_vk_attachment(attach)
-                    else:
-                        parsed = parse_vk_attachment(attach)
-                    
+                if isinstance(attach, str) and attach.startswith('attach1'):
+                    parsed = parse_vk_attachment(attach)
                     if parsed:
                         attach = parsed
-                        logger.info(f"Преобразованное вложение: {parsed}")
-                    else:
-                        continue
 
                 if not isinstance(attach, dict):
-                    logger.warning(f"Неподдерживаемый формат вложения: {type(attach)}")
                     continue
 
                 attach_type = attach.get('type')
-                logger.debug(f"Обработка вложения типа: {attach_type}")
 
                 if attach_type in ['photo', 'attach1']:
-                    if 'photo' in attach:
-                        photo_sizes = attach.get('photo', {}).get('sizes', [])
-                        if photo_sizes:
-                            photo = max(photo_sizes, key=lambda x: x.get('width', 0))
-                            photo_url = photo.get('url')
-                        else:
-                            photo_url = attach.get('photo', {}).get('url')
-                    else:
-                        photo_url = attach.get('url')
-
+                    photo_url = attach.get('url')
                     if photo_url:
                         await send_media_with_fallback(
                             chat_id=TELEGRAM_CHAT_ID,
@@ -336,13 +280,6 @@ async def forward_to_telegram(user_id, text, attachments):
                             url=audio_url,
                             caption=dialog_info
                         )
-
-                else:
-                    logger.warning(f"Необрабатываемый тип вложения: {attach_type}")
-                    await application.bot.send_message(
-                        chat_id=TELEGRAM_CHAT_ID,
-                        text=f"{dialog_info}\n📎 Вложение типа {attach_type} не поддерживается"
-                    )
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
@@ -472,31 +409,6 @@ def set_vk_status(text):
         logger.error(f"Ошибка установки статуса: {e}")
         return False
 
-async def send_stats(update: Update):
-    current_time = datetime.now(pytz.timezone('Asia/Yekaterinburg'))
-    uptime = datetime.now() - bot_stats.start_time
-    days = uptime.days
-    hours, remainder = divmod(uptime.seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    
-    last_msg_time = bot_stats.last_message_time.astimezone(pytz.timezone('Asia/Yekaterinburg')).strftime("%H:%M") if bot_stats.last_message_time else "еще нет"
-    
-    stats_text = (
-        "📊 Статистика работы бота:\n"
-        f"⏱ Время работы: {days}д {hours}ч {minutes}м\n"
-        f"🕒 Последнее сообщение: {last_msg_time}\n"
-        f"✉ Всего сообщений: {bot_stats.message_count}"
-    )
-    
-    await update.message.reply_text(stats_text)
-
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
-        await update.message.reply_text("⛔ Доступ запрещен")
-        return
-    
-    await send_stats(update)
-
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
     try:
         current_time = datetime.now(pytz.timezone('Asia/Yekaterinburg'))
@@ -529,24 +441,18 @@ def main():
         .build()
     )
 
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
-    application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.ALL, handle_message))
 
-    # Настройка JobQueue
     if application.job_queue:
         application.job_queue.run_repeating(
             callback=update_status_task,
             interval=900,
             first=10
         )
-    else:
-        logger.warning("JobQueue недоступен! Автообновление статуса отключено")
 
-    # Запуск VK listener
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
     
