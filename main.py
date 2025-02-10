@@ -71,19 +71,27 @@ def is_url_accessible(url):
 def parse_vk_attachment(attach_str: str) -> dict:
     """Парсит строковое представление вложения ВК"""
     try:
+        # Пример строки: "attach1_type_owner_id_id"
         parts = attach_str.split('_')
-        if len(parts) < 2:
+        if len(parts) < 3:
             return None
             
-        attach_type = parts[0].replace("'", "")
-        owner_id = parts[1]
-        media_id = parts[2] if len(parts) > 2 else None
+        # Извлекаем тип, owner_id и id
+        attach_type = parts[1]  # type
+        owner_id = parts[2]     # owner_id
+        media_id = parts[3] if len(parts) > 3 else None  # id
+
+        # Формируем URL
+        if attach_type == 'photo':
+            url = f"https://vk.com/photo{owner_id}_{media_id}"
+        else:
+            url = f"https://vk.com/{attach_type}{owner_id}_{media_id}"
 
         return {
             'type': attach_type,
             'owner_id': owner_id,
             'id': media_id,
-            'url': f"https://vk.com/{attach_type}{owner_id}_{media_id}"
+            'url': url
         }
     except Exception as e:
         logger.error(f"Ошибка парсинга вложения: {e}")
@@ -273,7 +281,7 @@ async def forward_to_telegram(user_id, text, attachments):
                 # Преобразование строковых вложений
                 if isinstance(attach, str):
                     if attach.startswith('attach1'):
-                        parsed = parse_vk_attachment(attach.replace('attach1', 'photo'))
+                        parsed = parse_vk_attachment(attach)
                     else:
                         parsed = parse_vk_attachment(attach)
                     
@@ -299,7 +307,7 @@ async def forward_to_telegram(user_id, text, attachments):
                         else:
                             photo_url = attach.get('photo', {}).get('url')
                     else:
-                        photo_url = f"https://vk.com/photo{attach['owner_id']}_{attach['id']}"
+                        photo_url = attach.get('url')
 
                     if photo_url:
                         await send_media_with_fallback(
