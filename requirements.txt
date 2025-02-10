@@ -1,5 +1,5 @@
-python-telegram-bot[callback-data,job-queue]
-vk_api 
 requests 
+python-telegram-bot[job-queue,callback-data] 
+vk_api 
 pytz 
 python-dotenv
