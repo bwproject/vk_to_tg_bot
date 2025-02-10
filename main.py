@@ -59,6 +59,15 @@ class BotStats:
 
 bot_stats = BotStats()
 
+def is_url_accessible(url):
+    """Проверяет доступность URL"""
+    try:
+        response = requests.head(url, timeout=5)
+        return response.status_code == 200
+    except Exception as e:
+        logger.warning(f"URL недоступен: {url}, ошибка: {e}")
+        return False
+
 def parse_vk_attachment(attach_str: str) -> dict:
     """Парсит строковое представление вложения ВК"""
     try:
@@ -184,6 +193,65 @@ def vk_listener(loop):
             logger.error(f"Ошибка в VK listener: {e}")
             time.sleep(5)
 
+async def send_media_with_fallback(chat_id, media_type, url, caption):
+    """Отправляет медиафайл с обработкой ошибок"""
+    try:
+        if media_type == 'photo':
+            if is_url_accessible(url):
+                await application.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=url,
+                    caption=caption
+                )
+            else:
+                filepath = download_file(url)
+                if filepath:
+                    with open(filepath, 'rb') as media_file:
+                        await application.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=media_file,
+                            caption=caption
+                        )
+                    os.remove(filepath)
+                else:
+                    logger.error(f"Не удалось загрузить фото: {url}")
+        
+        elif media_type == 'document':
+            if is_url_accessible(url):
+                await application.bot.send_document(
+                    chat_id=chat_id,
+                    document=url,
+                    caption=caption
+                )
+            else:
+                filepath = download_file(url)
+                if filepath:
+                    with open(filepath, 'rb') as media_file:
+                        await application.bot.send_document(
+                            chat_id=chat_id,
+                            document=media_file,
+                            caption=caption
+                        )
+                    os.remove(filepath)
+                else:
+                    logger.error(f"Не удалось загрузить документ: {url}")
+        
+        elif media_type == 'voice':
+            filepath = download_file(url)
+            if filepath:
+                with open(filepath, 'rb') as media_file:
+                    await application.bot.send_voice(
+                        chat_id=chat_id,
+                        voice=media_file,
+                        caption=caption
+                    )
+                os.remove(filepath)
+            else:
+                logger.error(f"Не удалось загрузить голосовое сообщение: {url}")
+
+    except Exception as e:
+        logger.error(f"Ошибка отправки медиа: {e}")
+
 async def forward_to_telegram(user_id, text, attachments):
     """Отправляет сообщение в Telegram"""
     try:
@@ -205,7 +273,6 @@ async def forward_to_telegram(user_id, text, attachments):
                 # Преобразование строковых вложений
                 if isinstance(attach, str):
                     if attach.startswith('attach1'):
-                        # Преобразуем attach1 в photo
                         parsed = parse_vk_attachment(attach.replace('attach1', 'photo'))
                     else:
                         parsed = parse_vk_attachment(attach)
@@ -223,7 +290,6 @@ async def forward_to_telegram(user_id, text, attachments):
                 attach_type = attach.get('type')
                 logger.debug(f"Обработка вложения типа: {attach_type}")
 
-                # Обработка фото и attach1
                 if attach_type in ['photo', 'attach1']:
                     if 'photo' in attach:
                         photo_sizes = attach.get('photo', {}).get('sizes', [])
@@ -233,38 +299,35 @@ async def forward_to_telegram(user_id, text, attachments):
                         else:
                             photo_url = attach.get('photo', {}).get('url')
                     else:
-                        # Если это строка attach1, формируем URL вручную
                         photo_url = f"https://vk.com/photo{attach['owner_id']}_{attach['id']}"
 
                     if photo_url:
-                        await application.bot.send_photo(
+                        await send_media_with_fallback(
                             chat_id=TELEGRAM_CHAT_ID,
-                            photo=photo_url,
+                            media_type='photo',
+                            url=photo_url,
                             caption=dialog_info
                         )
 
-                # Обработка документов
                 elif attach_type == 'doc':
                     doc_url = attach.get('doc', {}).get('url')
                     if doc_url:
-                        await application.bot.send_document(
+                        await send_media_with_fallback(
                             chat_id=TELEGRAM_CHAT_ID,
-                            document=doc_url,
+                            media_type='document',
+                            url=doc_url,
                             caption=dialog_info
                         )
 
-                # Обработка голосовых сообщений
                 elif attach_type == 'audio_message':
                     audio_url = attach.get('audio_message', {}).get('link_ogg')
                     if audio_url:
-                        filepath = download_file(audio_url)
-                        if filepath:
-                            with open(filepath, 'rb') as audio_file:
-                                await application.bot.send_voice(
-                                    chat_id=TELEGRAM_CHAT_ID,
-                                    voice=audio_file,
-                                    caption=dialog_info
-                                )
+                        await send_media_with_fallback(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            media_type='voice',
+                            url=audio_url,
+                            caption=dialog_info
+                        )
 
                 else:
                     logger.warning(f"Необрабатываемый тип вложения: {attach_type}")
@@ -278,6 +341,7 @@ async def forward_to_telegram(user_id, text, attachments):
 
     except Exception as e:
         logger.error(f"Ошибка пересылки в Telegram: {str(e)}", exc_info=True)
+
 # Обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
@@ -456,6 +520,7 @@ def main():
         .arbitrary_callback_data(True)
         .build()
     )
+
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
