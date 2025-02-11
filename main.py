@@ -33,9 +33,16 @@ VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
+
+# Сообщения
+ACCESS_DENIED_MESSAGE = os.getenv("ACCESS_DENIED_MESSAGE", "⛔ Доступ запрещен")
+DIALOG_NOT_SELECTED_MESSAGE = os.getenv("DIALOG_NOT_SELECTED_MESSAGE", "⚠ Сначала выберите диалог /dialogs")
 MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "\n\n(отправлено с помощью tg bota)")
+BOT_STATUS_TEMPLATE = os.getenv("BOT_STATUS_TEMPLATE", "⌛ Бот работает: {uptime} | 📨 Сообщений: {message_count} | 🕒 Последнее: {last_time} | @tgvktg_bot")
+
 MAX_DIALOGS = 10
 
+# Проверка обязательных переменных
 if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM_USER_ID]):
     raise ValueError("Не все обязательные переменные окружения заданы в .env!")
 
@@ -210,24 +217,18 @@ async def forward_to_telegram(user_id, text, attachments):
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
-        links = []
-        other_attachments = []
-        for a in attachments:
-            if isinstance(a, dict) and a.get('type') == 'link':
-                links.append(a)
-            else:
-                other_attachments.append(a)
+        # Основное сообщение
+        await application.bot.send_message(
+            TELEGRAM_CHAT_ID,
+            f"{dialog_info}:\n{text}"
+        )
 
-        message_text = f"{dialog_info}:\n{text}"
-        if links:
-            message_text += "\n\n🔗 Прикрепленные ссылки:"
-            for link in links:
-                message_text += f"\n- {link['url']}"
-
-        await application.bot.send_message(TELEGRAM_CHAT_ID, message_text)
-
-        for attach in other_attachments:
+        # Обработка вложений
+        for attach in attachments:
             try:
+                logger.debug(f"Сырые данные вложения: {attach}")
+
+                # Парсинг строковых вложений
                 if isinstance(attach, str):
                     parsed = parse_vk_attachment(attach)
                     if parsed:
@@ -236,26 +237,30 @@ async def forward_to_telegram(user_id, text, attachments):
                         continue
 
                 if not isinstance(attach, dict):
-                    logger.warning(f"Неподдерживаемый формат вложения: {attach}")
                     continue
 
                 attach_type = attach.get('type')
                 media_url = None
 
+                # Обработка фото
                 if attach_type == 'photo':
                     sizes = attach.get('photo', {}).get('sizes', [])
                     if sizes:
                         photo = max(sizes, key=lambda x: x.get('width', 0))
                         media_url = photo.get('url')
+
+                # Обработка аудио
                 elif attach_type == 'audio':
                     media_url = attach.get('url')
+
+                # Обработка голосовых сообщений
                 elif attach_type == 'audio_message':
                     media_url = attach.get('link_ogg')
 
                 if media_url:
                     await send_media_with_fallback(
                         TELEGRAM_CHAT_ID,
-                        'voice' if attach_type == 'audio_message' else attach_type,
+                        attach_type,
                         media_url,
                         dialog_info
                     )
@@ -268,7 +273,7 @@ async def forward_to_telegram(user_id, text, attachments):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
-        await update.message.reply_text("⛔ Доступ запрещен")
+        await update.message.reply_text(ACCESS_DENIED_MESSAGE)
         return
     await show_dialogs(update, context)
 
@@ -306,7 +311,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = str(query.from_user.id)
     if user_id != AUTHORIZED_TELEGRAM_USER_ID:
-        await query.edit_message_text("⛔ Доступ запрещен")
+        await query.edit_message_text(ACCESS_DENIED_MESSAGE)
         return
 
     selected_vk_id = int(query.data.split("_")[1])
@@ -325,7 +330,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     selected_vk_id = dialog_manager.get_selected(user_id)
     if not selected_vk_id:
-        await update.message.reply_text("⚠ Сначала выберите диалог /dialogs")
+        await update.message.reply_text(DIALOG_NOT_SELECTED_MESSAGE)
         return
 
     try:
@@ -399,31 +404,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка отправки: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-def set_vk_status(text):
-    try:
-        vk.status.set(text=text)
-        logger.info(f"Статус обновлен: {text}")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка установки статуса: {e}")
-        return False
-
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
     try:
         current_time = datetime.now(pytz.timezone('Asia/Yekaterinburg'))
         uptime = datetime.now() - bot_stats.start_time
+        days = uptime.days
+        hours, remainder = divmod(uptime.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
         
-        status_text = (
-            f"⌛ Бот работает: {uptime.days}д {uptime.seconds//3600}ч {(uptime.seconds//60)%60}м | "
-            f"📨 Сообщений: {bot_stats.message_count} | "
-            f"🕒 Последнее: {current_time.strftime('%H:%M')} | "
-            f"@bwtgvk_bot"
+        status_text = BOT_STATUS_TEMPLATE.format(
+            uptime=f"{days}д {hours}ч {minutes}м",
+            message_count=bot_stats.message_count,
+            last_time=current_time.strftime('%H:%M')
         )
         
-        set_vk_status(status_text)
+        vk.status.set(text=status_text)
+        logger.info(f"Статус обновлен: {status_text}")
             
     except Exception as e:
-        logger.error(f"Ошибка в задаче обновления статуса: {e}")
+        logger.error(f"Ошибка обновления статуса: {e}")
 
 def main():
     global application
