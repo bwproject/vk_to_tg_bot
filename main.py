@@ -18,7 +18,7 @@ import pytz
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
+    headers=[
         logging.FileHandler("logs.txt"),
         logging.StreamHandler()
     ]
@@ -71,14 +71,22 @@ def is_url_accessible(url):
 def parse_vk_attachment(attach_str: str) -> dict:
     """Парсит строковое представление вложения ВК"""
     try:
+        # Пример: "photo-123_456" или "attach1_wall-123_456"
         parts = attach_str.split('_')
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None
-            
-        attach_type = parts[1]
-        owner_id = parts[2]
-        media_id = parts[3] if len(parts) > 3 else None
 
+        # Определяем тип вложения
+        attach_type = parts[0].replace('attach1_', '')  # Обрабатываем attach1_photo случаи
+        if '-' in attach_type:
+            attach_type = attach_type.split('-')[0]
+
+        # Извлекаем owner_id и media_id
+        owner_part = parts[1].split('-')[-1]
+        owner_id = owner_part.replace(' ', '')
+        media_id = parts[2] if len(parts) > 2 else None
+
+        # Формируем URL
         if attach_type == 'photo':
             url = f"https://vk.com/photo{owner_id}_{media_id}"
         else:
@@ -91,7 +99,7 @@ def parse_vk_attachment(attach_str: str) -> dict:
             'url': url
         }
     except Exception as e:
-        logger.error(f"Ошибка парсинга вложения: {e}")
+        logger.error(f"Ошибка парсинга вложения {attach_str}: {e}")
         return None
 
 def get_user_info(user_id):
@@ -106,12 +114,16 @@ def get_user_info(user_id):
 def download_file(url):
     """Скачивает файл и возвращает временный путь"""
     try:
-        response = requests.get(url, stream=True, timeout=10)
+        response = requests.get(url, stream=True, timeout=10, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        })
+        
         if response.status_code == 200:
-            filename = os.path.basename(url)
+            filename = os.path.basename(url.split('?')[0])  # Убираем параметры запроса
             filepath = os.path.join("/tmp", filename)
+            
             with open(filepath, "wb") as f:
-                for chunk in response.iter_content(1024):
+                for chunk in response.iter_content(1024*1024):  # 1MB chunks
                     f.write(chunk)
             return filepath
     except Exception as e:
@@ -173,14 +185,17 @@ def vk_listener(loop):
 async def send_media_with_fallback(chat_id, media_type, url, caption):
     """Отправляет медиафайл с обработкой ошибок"""
     try:
+        logger.info(f"Попытка отправить {media_type}: {url}")
+        
         if media_type == 'photo':
-            if is_url_accessible(url):
+            try:
                 await application.bot.send_photo(
                     chat_id=chat_id,
                     photo=url,
                     caption=caption
                 )
-            else:
+            except Exception as e:
+                logger.warning(f"Не удалось отправить по URL, пробую скачать: {e}")
                 filepath = download_file(url)
                 if filepath:
                     with open(filepath, 'rb') as media_file:
@@ -190,38 +205,8 @@ async def send_media_with_fallback(chat_id, media_type, url, caption):
                             caption=caption
                         )
                     os.remove(filepath)
-        
-        elif media_type == 'document':
-            if is_url_accessible(url):
-                await application.bot.send_document(
-                    chat_id=chat_id,
-                    document=url,
-                    caption=caption
-                )
-            else:
-                filepath = download_file(url)
-                if filepath:
-                    with open(filepath, 'rb') as media_file:
-                        await application.bot.send_document(
-                            chat_id=chat_id,
-                            document=media_file,
-                            caption=caption
-                        )
-                    os.remove(filepath)
-        
-        elif media_type == 'voice':
-            filepath = download_file(url)
-            if filepath:
-                with open(filepath, 'rb') as media_file:
-                    await application.bot.send_voice(
-                        chat_id=chat_id,
-                        voice=media_file,
-                        caption=caption
-                    )
-                os.remove(filepath)
-
     except Exception as e:
-        logger.error(f"Ошибка отправки медиа: {e}")
+        logger.error(f"Критическая ошибка отправки медиа: {e}")
 
 async def forward_to_telegram(user_id, text, attachments):
     """Отправляет сообщение в Telegram"""
@@ -241,45 +226,34 @@ async def forward_to_telegram(user_id, text, attachments):
             try:
                 logger.debug(f"Сырые данные вложения: {attach}")
 
-                if isinstance(attach, str) and attach.startswith('attach1'):
+                # Обработка разных форматов вложений
+                if isinstance(attach, str):
                     parsed = parse_vk_attachment(attach)
                     if parsed:
                         attach = parsed
+                        logger.info(f"Преобразованное вложение: {parsed}")
+                    else:
+                        continue
 
-                if not isinstance(attach, dict):
-                    continue
+                if isinstance(attach, dict):
+                    # Для словарных вложений из VK API
+                    attach_type = attach.get('type')
+                    if attach_type == 'photo':
+                        # Получаем фото максимального размера
+                        sizes = attach['photo']['sizes']
+                        photo = max(sizes, key=lambda x: x['width'])
+                        photo_url = photo['url']
+                    elif 'url' in attach:
+                        photo_url = attach['url']
+                    else:
+                        continue
 
-                attach_type = attach.get('type')
-
-                if attach_type in ['photo', 'attach1']:
-                    photo_url = attach.get('url')
-                    if photo_url:
-                        await send_media_with_fallback(
-                            chat_id=TELEGRAM_CHAT_ID,
-                            media_type='photo',
-                            url=photo_url,
-                            caption=dialog_info
-                        )
-
-                elif attach_type == 'doc':
-                    doc_url = attach.get('doc', {}).get('url')
-                    if doc_url:
-                        await send_media_with_fallback(
-                            chat_id=TELEGRAM_CHAT_ID,
-                            media_type='document',
-                            url=doc_url,
-                            caption=dialog_info
-                        )
-
-                elif attach_type == 'audio_message':
-                    audio_url = attach.get('audio_message', {}).get('link_ogg')
-                    if audio_url:
-                        await send_media_with_fallback(
-                            chat_id=TELEGRAM_CHAT_ID,
-                            media_type='voice',
-                            url=audio_url,
-                            caption=dialog_info
-                        )
+                    await send_media_with_fallback(
+                        chat_id=TELEGRAM_CHAT_ID,
+                        media_type='photo',
+                        url=photo_url,
+                        caption=dialog_info
+                    )
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
