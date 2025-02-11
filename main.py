@@ -246,8 +246,8 @@ async def forward_to_telegram(user_id, text, attachments):
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
         # Обрабатываем ссылки отдельно
-        links = [a for a in attachments if a.get('type') == 'link']
-        other_attachments = [a for a in attachments if a.get('type') != 'link']
+        links = [a for a in attachments if isinstance(a, dict) and a.get('type') == 'link']
+        other_attachments = [a for a in attachments if not (isinstance(a, dict) and a.get('type') == 'link')]
 
         # Основное сообщение с текстом и ссылками
         message_text = f"{dialog_info}:\n{text}"
@@ -270,6 +270,11 @@ async def forward_to_telegram(user_id, text, attachments):
                         attach = parsed
                     else:
                         continue
+
+                # Проверяем, что attach является словарём
+                if not isinstance(attach, dict):
+                    logger.warning(f"Неподдерживаемый формат вложения: {attach}")
+                    continue
 
                 attach_type = attach.get('type')
                 media_url = None
