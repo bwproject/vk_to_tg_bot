@@ -24,8 +24,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Отключаем логи httpx
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv()
@@ -38,19 +36,14 @@ AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
 MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "\n\n(отправлено с помощью tg bota)")
 MAX_DIALOGS = 10
 
-# Проверка переменных окружения
 if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM_USER_ID]):
     raise ValueError("Не все обязательные переменные окружения заданы в .env!")
 
 # Инициализация VK
-vk_session = vk_api.VkApi(
-    token=VK_USER_TOKEN,
-    scope=65536  # status permission
-)
+vk_session = vk_api.VkApi(token=VK_USER_TOKEN, scope=65536)
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 
-# Утилиты
 class BotStats:
     def __init__(self):
         self.start_time = datetime.now()
@@ -59,17 +52,7 @@ class BotStats:
 
 bot_stats = BotStats()
 
-def is_url_accessible(url):
-    """Проверяет доступность URL"""
-    try:
-        response = requests.head(url, timeout=5)
-        return response.status_code == 200
-    except Exception as e:
-        logger.warning(f"URL недоступен: {url}, ошибка: {e}")
-        return False
-
 def parse_vk_attachment(attach_str: str) -> dict:
-    """Парсит строковое представление вложения ВК"""
     try:
         parts = attach_str.split('_')
         if len(parts) < 2:
@@ -83,15 +66,16 @@ def parse_vk_attachment(attach_str: str) -> dict:
         owner_id = owner_part.replace(' ', '')
         media_id = parts[2] if len(parts) > 2 else None
 
-        # Добавляем новые типы
-        if attach_type == 'audio':
+        if attach_type == 'photo':
+            url = f"https://vk.com/photo{owner_id}_{media_id}"
+        elif attach_type == 'audio':
             url = f"https://vk.com/audio{owner_id}_{media_id}"
         elif attach_type == 'audio_message':
             url = f"https://vk.com/audio_message{owner_id}_{media_id}"
         elif attach_type == 'link':
-            return {'type': 'link', 'url': parts[1]}  # URL хранится во второй части
+            return {'type': 'link', 'url': parts[1]}
         else:
-            url = None  # Для остальных типов
+            url = None
 
         return {
             'type': attach_type,
@@ -104,7 +88,6 @@ def parse_vk_attachment(attach_str: str) -> dict:
         return None
 
 def get_user_info(user_id):
-    """Получает информацию о пользователе VK"""
     try:
         response = vk.users.get(user_ids=user_id, fields="first_name,last_name,photo_50")
         return response[0] if response else {}
@@ -113,25 +96,23 @@ def get_user_info(user_id):
         return {}
 
 def download_file(url):
-    """Скачивает файл и возвращает временный путь"""
     try:
         response = requests.get(url, stream=True, timeout=10, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
         })
         
         if response.status_code == 200:
-            filename = os.path.basename(url.split('?')[0])  # Убираем параметры запроса
+            filename = os.path.basename(url.split('?')[0])
             filepath = os.path.join("/tmp", filename)
             
             with open(filepath, "wb") as f:
-                for chunk in response.iter_content(1024*1024):  # 1MB chunks
+                for chunk in response.iter_content(1024*1024):
                     f.write(chunk)
             return filepath
     except Exception as e:
         logger.error(f"Ошибка загрузки файла: {e}")
     return None
 
-# Менеджер диалогов
 class DialogManager:
     def __init__(self):
         self.dialogs = OrderedDict()
@@ -166,9 +147,7 @@ class DialogManager:
 
 dialog_manager = DialogManager()
 
-# Обработчики VK
 def vk_listener(loop):
-    """Слушает новые сообщения из VK"""
     while True:
         try:
             for event in longpoll.listen():
@@ -184,60 +163,46 @@ def vk_listener(loop):
             time.sleep(5)
 
 async def send_media_with_fallback(chat_id, media_type, url, caption):
-    """Отправляет медиафайл с обработкой ошибок"""
     try:
         logger.info(f"Попытка отправить {media_type}: {url}")
 
-        # Для аудио
-        if media_type == 'audio':
+        if media_type == 'photo':
             try:
-                await application.bot.send_audio(
-                    chat_id=chat_id,
-                    audio=url,
-                    caption=caption
-                )
+                await application.bot.send_photo(chat_id, url, caption=caption)
             except Exception as e:
                 filepath = download_file(url)
                 if filepath:
-                    with open(filepath, 'rb') as media_file:
-                        await application.bot.send_audio(
-                            chat_id=chat_id,
-                            audio=media_file,
-                            caption=caption
-                        )
+                    with open(filepath, 'rb') as f:
+                        await application.bot.send_photo(chat_id, f, caption=caption)
                     os.remove(filepath)
 
-        # Для голосовых сообщений
+        elif media_type == 'audio':
+            try:
+                await application.bot.send_audio(chat_id, url, caption=caption)
+            except Exception as e:
+                filepath = download_file(url)
+                if filepath:
+                    with open(filepath, 'rb') as f:
+                        await application.bot.send_audio(chat_id, f, caption=caption)
+                    os.remove(filepath)
+
         elif media_type == 'voice':
             try:
-                await application.bot.send_voice(
-                    chat_id=chat_id,
-                    voice=url,
-                    caption=caption
-                )
+                await application.bot.send_voice(chat_id, url, caption=caption)
             except Exception as e:
                 filepath = download_file(url)
                 if filepath:
-                    with open(filepath, 'rb') as media_file:
-                        await application.bot.send_voice(
-                            chat_id=chat_id,
-                            voice=media_file,
-                            caption=caption
-                        )
+                    with open(filepath, 'rb') as f:
+                        await application.bot.send_voice(chat_id, f, caption=caption)
                     os.remove(filepath)
 
-        # Для ссылок
         elif media_type == 'link':
-            await application.bot.send_message(
-                chat_id=chat_id,
-                text=f"🔗 Ссылка: {url}\n{caption}"
-            )
+            await application.bot.send_message(chat_id, f"🔗 Ссылка: {url}\n{caption}")
 
     except Exception as e:
         logger.error(f"Ошибка отправки {media_type}: {e}")
 
 async def forward_to_telegram(user_id, text, attachments):
-    """Отправляет сообщение в Telegram"""
     try:
         bot_stats.last_message_time = datetime.now()
         bot_stats.message_count += 1
@@ -245,23 +210,22 @@ async def forward_to_telegram(user_id, text, attachments):
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
-        # Обрабатываем ссылки отдельно
-        links = [a for a in attachments if isinstance(a, dict) and a.get('type') == 'link']
-        other_attachments = [a for a in attachments if not (isinstance(a, dict) and a.get('type') == 'link')]
+        links = []
+        other_attachments = []
+        for a in attachments:
+            if isinstance(a, dict) and a.get('type') == 'link':
+                links.append(a)
+            else:
+                other_attachments.append(a)
 
-        # Основное сообщение с текстом и ссылками
         message_text = f"{dialog_info}:\n{text}"
         if links:
             message_text += "\n\n🔗 Прикрепленные ссылки:"
             for link in links:
                 message_text += f"\n- {link['url']}"
 
-        await application.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=message_text
-        )
+        await application.bot.send_message(TELEGRAM_CHAT_ID, message_text)
 
-        # Обработка остальных вложений
         for attach in other_attachments:
             try:
                 if isinstance(attach, str):
@@ -271,7 +235,6 @@ async def forward_to_telegram(user_id, text, attachments):
                     else:
                         continue
 
-                # Проверяем, что attach является словарём
                 if not isinstance(attach, dict):
                     logger.warning(f"Неподдерживаемый формат вложения: {attach}")
                     continue
@@ -279,20 +242,22 @@ async def forward_to_telegram(user_id, text, attachments):
                 attach_type = attach.get('type')
                 media_url = None
 
-                # Для аудио
-                if attach_type == 'audio':
+                if attach_type == 'photo':
+                    sizes = attach.get('photo', {}).get('sizes', [])
+                    if sizes:
+                        photo = max(sizes, key=lambda x: x.get('width', 0))
+                        media_url = photo.get('url')
+                elif attach_type == 'audio':
                     media_url = attach.get('url')
-                
-                # Для голосовых сообщений
                 elif attach_type == 'audio_message':
-                    media_url = attach.get('link_ogg')  # или link_mp3
-                
+                    media_url = attach.get('link_ogg')
+
                 if media_url:
                     await send_media_with_fallback(
-                        chat_id=TELEGRAM_CHAT_ID,
-                        media_type='voice' if attach_type == 'audio_message' else attach_type,
-                        url=media_url,
-                        caption=dialog_info
+                        TELEGRAM_CHAT_ID,
+                        'voice' if attach_type == 'audio_message' else attach_type,
+                        media_url,
+                        dialog_info
                     )
 
             except Exception as e:
@@ -301,7 +266,6 @@ async def forward_to_telegram(user_id, text, attachments):
     except Exception as e:
         logger.error(f"Ошибка пересылки: {e}")
 
-# Обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
         await update.message.reply_text("⛔ Доступ запрещен")
@@ -330,8 +294,8 @@ async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for user_id, dialog in dialogs
     ]
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(message_text.strip(), reply_markup=reply_markup)
+    await update.message.reply_text(message_text.strip(), 
+                                  reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -368,10 +332,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         signature = MESSAGE_SIGNATURE
         
         if update.message.text:
-            message_text = update.message.text + signature
             vk.messages.send(
                 user_id=selected_vk_id,
-                message=message_text,
+                message=update.message.text + signature,
                 random_id=0
             )
             await update.message.reply_text("✅ Сообщение отправлено")
@@ -382,67 +345,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if filepath:
                 upload = vk_api.VkUpload(vk_session)
                 photo_data = upload.photo_messages(filepath)[0]
-                attachment = f"photo{photo_data['owner_id']}_{photo_data['id']}"
                 vk.messages.send(
                     user_id=selected_vk_id,
-                    attachment=attachment,
+                    attachment=f"photo{photo_data['owner_id']}_{photo_data['id']}",
                     message=signature.strip(),
                     random_id=0
                 )
                 await update.message.reply_text("✅ Фото отправлено")
 
         elif update.message.document:
-            document = await update.message.document.get_file()
-            filepath = download_file(document.file_path)
+            doc = await update.message.document.get_file()
+            filepath = download_file(doc.file_path)
             if filepath:
                 upload = vk_api.VkUpload(vk_session)
-                doc_data = upload.document_message(
-                    filepath,
-                    peer_id=selected_vk_id,
-                    doc_type="doc"
-                )
-                attachment = f"doc{doc_data['owner_id']}_{doc_data['id']}"
+                doc_data = upload.document_message(filepath, selected_vk_id, "doc")
                 vk.messages.send(
                     user_id=selected_vk_id,
-                    attachment=attachment,
+                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
                     message=signature.strip(),
                     random_id=0
                 )
                 await update.message.reply_text("✅ Документ отправлен")
-
-        elif update.message.video:
-            video = await update.message.video.get_file()
-            filepath = download_file(video.file_path)
-            if filepath:
-                upload = vk_api.VkUpload(vk_session)
-                video_data = upload.video(
-                    filepath,
-                    name="video.mp4",
-                    description="Видео из Telegram"
-                )
-                attachment = f"video{video_data['owner_id']}_{video_data['id']}"
-                vk.messages.send(
-                    user_id=selected_vk_id,
-                    attachment=attachment,
-                    message=signature.strip(),
-                    random_id=0
-                )
-                await update.message.reply_text("✅ Видео отправлено")
 
         elif update.message.audio:
             audio = await update.message.audio.get_file()
             filepath = download_file(audio.file_path)
             if filepath:
                 upload = vk_api.VkUpload(vk_session)
-                audio_data = upload.audio(
-                    filepath,
-                    artist="Исполнитель",
-                    title="Трек из Telegram"
-                )
-                attachment = f"audio{audio_data['owner_id']}_{audio_data['id']}"
+                audio_data = upload.audio(filepath, artist="Исполнитель", title="Трек из Telegram")
                 vk.messages.send(
                     user_id=selected_vk_id,
-                    attachment=attachment,
+                    attachment=f"audio{audio_data['owner_id']}_{audio_data['id']}",
                     message=signature.strip(),
                     random_id=0
                 )
@@ -453,15 +386,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filepath = download_file(voice.file_path)
             if filepath:
                 upload = vk_api.VkUpload(vk_session)
-                doc_data = upload.document_message(
-                    filepath,
-                    peer_id=selected_vk_id,
-                    doc_type="audio_message"  # Специальный тип для голосовых
-                )
-                attachment = f"doc{doc_data['owner_id']}_{doc_data['id']}"
+                doc_data = upload.document_message(filepath, selected_vk_id, "audio_message")
                 vk.messages.send(
                     user_id=selected_vk_id,
-                    attachment=attachment,
+                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
                     message=signature.strip(),
                     random_id=0
                 )
@@ -476,7 +404,7 @@ def set_vk_status(text):
         vk.status.set(text=text)
         logger.info(f"Статус обновлен: {text}")
         return True
-    except vk_api.exceptions.ApiError as e:
+    except Exception as e:
         logger.error(f"Ошибка установки статуса: {e}")
         return False
 
@@ -484,45 +412,29 @@ async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
     try:
         current_time = datetime.now(pytz.timezone('Asia/Yekaterinburg'))
         uptime = datetime.now() - bot_stats.start_time
-        days = uptime.days
-        hours, remainder = divmod(uptime.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
         
         status_text = (
-            f"⌛ Бот работает: {days}д {hours}ч {minutes}м | "
+            f"⌛ Бот работает: {uptime.days}д {uptime.seconds//3600}ч {(uptime.seconds//60)%60}м | "
             f"📨 Сообщений: {bot_stats.message_count} | "
             f"🕒 Последнее: {current_time.strftime('%H:%M')} | "
             f"@tgvktg_bot"
         )
         
-        if set_vk_status(status_text):
-            logger.info("Статус ВК успешно обновлен")
-        else:
-            logger.warning("Не удалось обновить статус ВК")
+        set_vk_status(status_text)
             
     except Exception as e:
         logger.error(f"Ошибка в задаче обновления статуса: {e}")
 
 def main():
     global application
-    application = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .arbitrary_callback_data(True)
-        .build()
-    )
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.ALL, handle_message))
 
-    if application.job_queue:
-        application.job_queue.run_repeating(
-            callback=update_status_task,
-            interval=900,
-            first=10
-        )
+    application.job_queue.run_repeating(update_status_task, interval=900, first=10)
 
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
