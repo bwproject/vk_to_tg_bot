@@ -18,7 +18,7 @@ import pytz
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    headers=[
+    handlers=[
         logging.FileHandler("logs.txt"),
         logging.StreamHandler()
     ]
@@ -71,26 +71,27 @@ def is_url_accessible(url):
 def parse_vk_attachment(attach_str: str) -> dict:
     """Парсит строковое представление вложения ВК"""
     try:
-        # Пример: "photo-123_456" или "attach1_wall-123_456"
         parts = attach_str.split('_')
         if len(parts) < 2:
             return None
 
-        # Определяем тип вложения
-        attach_type = parts[0].replace('attach1_', '')  # Обрабатываем attach1_photo случаи
+        attach_type = parts[0].replace('attach1_', '')
         if '-' in attach_type:
             attach_type = attach_type.split('-')[0]
 
-        # Извлекаем owner_id и media_id
         owner_part = parts[1].split('-')[-1]
         owner_id = owner_part.replace(' ', '')
         media_id = parts[2] if len(parts) > 2 else None
 
-        # Формируем URL
-        if attach_type == 'photo':
-            url = f"https://vk.com/photo{owner_id}_{media_id}"
+        # Добавляем новые типы
+        if attach_type == 'audio':
+            url = f"https://vk.com/audio{owner_id}_{media_id}"
+        elif attach_type == 'audio_message':
+            url = f"https://vk.com/audio_message{owner_id}_{media_id}"
+        elif attach_type == 'link':
+            return {'type': 'link', 'url': parts[1]}  # URL хранится во второй части
         else:
-            url = f"https://vk.com/{attach_type}{owner_id}_{media_id}"
+            url = None  # Для остальных типов
 
         return {
             'type': attach_type,
@@ -186,27 +187,54 @@ async def send_media_with_fallback(chat_id, media_type, url, caption):
     """Отправляет медиафайл с обработкой ошибок"""
     try:
         logger.info(f"Попытка отправить {media_type}: {url}")
-        
-        if media_type == 'photo':
+
+        # Для аудио
+        if media_type == 'audio':
             try:
-                await application.bot.send_photo(
+                await application.bot.send_audio(
                     chat_id=chat_id,
-                    photo=url,
+                    audio=url,
                     caption=caption
                 )
             except Exception as e:
-                logger.warning(f"Не удалось отправить по URL, пробую скачать: {e}")
                 filepath = download_file(url)
                 if filepath:
                     with open(filepath, 'rb') as media_file:
-                        await application.bot.send_photo(
+                        await application.bot.send_audio(
                             chat_id=chat_id,
-                            photo=media_file,
+                            audio=media_file,
                             caption=caption
                         )
                     os.remove(filepath)
+
+        # Для голосовых сообщений
+        elif media_type == 'voice':
+            try:
+                await application.bot.send_voice(
+                    chat_id=chat_id,
+                    voice=url,
+                    caption=caption
+                )
+            except Exception as e:
+                filepath = download_file(url)
+                if filepath:
+                    with open(filepath, 'rb') as media_file:
+                        await application.bot.send_voice(
+                            chat_id=chat_id,
+                            voice=media_file,
+                            caption=caption
+                        )
+                    os.remove(filepath)
+
+        # Для ссылок
+        elif media_type == 'link':
+            await application.bot.send_message(
+                chat_id=chat_id,
+                text=f"🔗 Ссылка: {url}\n{caption}"
+            )
+
     except Exception as e:
-        logger.error(f"Критическая ошибка отправки медиа: {e}")
+        logger.error(f"Ошибка отправки {media_type}: {e}")
 
 async def forward_to_telegram(user_id, text, attachments):
     """Отправляет сообщение в Telegram"""
@@ -217,49 +245,56 @@ async def forward_to_telegram(user_id, text, attachments):
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
+        # Обрабатываем ссылки отдельно
+        links = [a for a in attachments if a.get('type') == 'link']
+        other_attachments = [a for a in attachments if a.get('type') != 'link']
+
+        # Основное сообщение с текстом и ссылками
+        message_text = f"{dialog_info}:\n{text}"
+        if links:
+            message_text += "\n\n🔗 Прикрепленные ссылки:"
+            for link in links:
+                message_text += f"\n- {link['url']}"
+
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text=f"{dialog_info}:\n{text}"
+            text=message_text
         )
 
-        for attach in attachments:
+        # Обработка остальных вложений
+        for attach in other_attachments:
             try:
-                logger.debug(f"Сырые данные вложения: {attach}")
-
-                # Обработка разных форматов вложений
                 if isinstance(attach, str):
                     parsed = parse_vk_attachment(attach)
                     if parsed:
                         attach = parsed
-                        logger.info(f"Преобразованное вложение: {parsed}")
                     else:
                         continue
 
-                if isinstance(attach, dict):
-                    # Для словарных вложений из VK API
-                    attach_type = attach.get('type')
-                    if attach_type == 'photo':
-                        # Получаем фото максимального размера
-                        sizes = attach['photo']['sizes']
-                        photo = max(sizes, key=lambda x: x['width'])
-                        photo_url = photo['url']
-                    elif 'url' in attach:
-                        photo_url = attach['url']
-                    else:
-                        continue
+                attach_type = attach.get('type')
+                media_url = None
 
+                # Для аудио
+                if attach_type == 'audio':
+                    media_url = attach.get('url')
+                
+                # Для голосовых сообщений
+                elif attach_type == 'audio_message':
+                    media_url = attach.get('link_ogg')  # или link_mp3
+                
+                if media_url:
                     await send_media_with_fallback(
                         chat_id=TELEGRAM_CHAT_ID,
-                        media_type='photo',
-                        url=photo_url,
+                        media_type='voice' if attach_type == 'audio_message' else attach_type,
+                        url=media_url,
                         caption=dialog_info
                     )
 
             except Exception as e:
-                logger.error(f"Ошибка обработки вложения: {str(e)}", exc_info=True)
+                logger.error(f"Ошибка обработки вложения: {e}")
 
     except Exception as e:
-        logger.error(f"Ошибка пересылки в Telegram: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка пересылки: {e}")
 
 # Обработчики Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -351,17 +386,74 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text("✅ Фото отправлено")
 
+        elif update.message.document:
+            document = await update.message.document.get_file()
+            filepath = download_file(document.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                doc_data = upload.document_message(
+                    filepath,
+                    peer_id=selected_vk_id,
+                    doc_type="doc"
+                )
+                attachment = f"doc{doc_data['owner_id']}_{doc_data['id']}"
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=attachment,
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Документ отправлен")
+
+        elif update.message.video:
+            video = await update.message.video.get_file()
+            filepath = download_file(video.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                video_data = upload.video(
+                    filepath,
+                    name="video.mp4",
+                    description="Видео из Telegram"
+                )
+                attachment = f"video{video_data['owner_id']}_{video_data['id']}"
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=attachment,
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Видео отправлено")
+
+        elif update.message.audio:
+            audio = await update.message.audio.get_file()
+            filepath = download_file(audio.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                audio_data = upload.audio(
+                    filepath,
+                    artist="Исполнитель",
+                    title="Трек из Telegram"
+                )
+                attachment = f"audio{audio_data['owner_id']}_{audio_data['id']}"
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=attachment,
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Аудио отправлено")
+
         elif update.message.voice:
             voice = await update.message.voice.get_file()
             filepath = download_file(voice.file_path)
             if filepath:
                 upload = vk_api.VkUpload(vk_session)
-                doc = upload.document_message(
+                doc_data = upload.document_message(
                     filepath,
                     peer_id=selected_vk_id,
-                    doc_type="audio_message"
+                    doc_type="audio_message"  # Специальный тип для голосовых
                 )
-                attachment = f"doc{doc['owner_id']}_{doc['id']}"
+                attachment = f"doc{doc_data['owner_id']}_{doc_data['id']}"
                 vk.messages.send(
                     user_id=selected_vk_id,
                     attachment=attachment,
