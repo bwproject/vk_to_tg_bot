@@ -417,7 +417,7 @@ async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
             f"⌛ Бот работает: {uptime.days}д {uptime.seconds//3600}ч {(uptime.seconds//60)%60}м | "
             f"📨 Сообщений: {bot_stats.message_count} | "
             f"🕒 Последнее: {current_time.strftime('%H:%M')} | "
-            f"@tgvktg_bot"
+            f"@bwtgvk_bot"
         )
         
         set_vk_status(status_text)
