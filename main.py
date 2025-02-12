@@ -1,6 +1,6 @@
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import asyncio
 import threading
@@ -23,6 +23,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv()
 
@@ -31,13 +32,13 @@ VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
-TIMEZONE = os.getenv("TIMEZONE")  # Временная зона
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 
 # Сообщения
-ACCESS_DENIED_MESSAGE = os.getenv("ACCESS_DENIED_MESSAGE")
-DIALOG_NOT_SELECTED_MESSAGE = os.getenv("DIALOG_NOT_SELECTED_MESSAGE")
-MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE")
-BOT_STATUS_TEMPLATE = os.getenv("BOT_STATUS_TEMPLATE")
+ACCESS_DENIED_MESSAGE = os.getenv("ACCESS_DENIED_MESSAGE", "⛔ Доступ запрещен")
+DIALOG_NOT_SELECTED_MESSAGE = os.getenv("DIALOG_NOT_SELECTED_MESSAGE", "⚠ Сначала выберите диалог /dialogs")
+MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "\n\n(отправлено с помощью tg bota)")
+BOT_STATUS_TEMPLATE = os.getenv("BOT_STATUS_TEMPLATE", "⌛ Бот работает: {uptime} | 📨 Сообщений: {message_count} | 🕒 Последнее: {last_time}")
 
 MAX_DIALOGS = 10
 
@@ -52,7 +53,7 @@ longpoll = VkLongPoll(vk_session)
 
 class BotStats:
     def __init__(self):
-        self.start_time = datetime.now()
+        self.start_time = datetime.now(pytz.timezone(TIMEZONE))
         self.last_message_time = None
         self.message_count = 0
 
@@ -196,8 +197,6 @@ async def send_media_with_fallback(chat_id, media_type, url, caption):
             else:
                 logger.error(f"Не удалось скачать фото: {url}")
 
-        # Обработка других типов медиа...
-
     except Exception as e:
         logger.error(f"Критическая ошибка отправки медиа: {e}")
 
@@ -207,7 +206,7 @@ async def forward_to_telegram(user_id, text, attachments):
         logger.info(f"Обработка сообщения от {user_id}")
         logger.debug(f"Сырые вложения: {attachments}")
 
-        bot_stats.last_message_time = datetime.now()
+        bot_stats.last_message_time = datetime.now(pytz.timezone(TIMEZONE))
         bot_stats.message_count += 1
 
         user_info = get_user_info(user_id)
@@ -222,7 +221,6 @@ async def forward_to_telegram(user_id, text, attachments):
         # Обработка вложений
         for attach in attachments:
             try:
-                # Парсинг строковых вложений
                 if isinstance(attach, str):
                     parsed = parse_vk_attachment(attach)
                     if not parsed:
@@ -236,11 +234,9 @@ async def forward_to_telegram(user_id, text, attachments):
                 attach_type = attach.get('type')
                 logger.debug(f"Обработка вложения типа: {attach_type}")
 
-                # Обработка фото
                 if attach_type == 'photo':
                     photo_data = attach.get('photo', {})
                     
-                    # Получение URL максимального качества
                     if 'sizes' in photo_data:
                         sizes = photo_data['sizes']
                         photo = max(sizes, key=lambda x: x.get('width', 0))
@@ -259,8 +255,6 @@ async def forward_to_telegram(user_id, text, attachments):
                             url=photo_url,
                             caption=dialog_info
                         )
-                    else:
-                        logger.error("Не удалось получить доступный URL фото")
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {e}", exc_info=True)
@@ -269,31 +263,181 @@ async def forward_to_telegram(user_id, text, attachments):
         logger.error(f"Ошибка пересылки: {e}", exc_info=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает команду /start и добавляет клавиатуру с командами"""
+    """Обрабатывает команду /start"""
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
         await update.message.reply_text(ACCESS_DENIED_MESSAGE)
         return
+    await show_dialogs(update, context)
 
-    # Создаем клавиатуру с командами
+async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список диалогов"""
+    dialogs = dialog_manager.get_dialogs()
+    if not dialogs:
+        await update.message.reply_text("🤷 Нет активных диалогов")
+        return
+
+    message_text = "📋 Последние диалоги:\n\n"
+    for i, (user_id, dialog) in enumerate(dialogs, 1):
+        user = dialog['info']
+        message_text += (
+            f"{i}. {user.get('first_name', '?')} {user.get('last_name', '?')}\n"
+            f"   └ {dialog['last_msg']}\n\n"
+        )
+
     keyboard = [
-        [InlineKeyboardButton("Просмотр истории", callback_data="view_history")],
-        [InlineKeyboardButton("Выбор диалога", callback_data="select_dialog")]
+        [InlineKeyboardButton(
+            f"{dialog['info'].get('first_name', '?')} {dialog['info'].get('last_name', '?')}", 
+            callback_data=f"select_{user_id}"
+        )]
+        for user_id, dialog in dialogs
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        "Добро пожаловать в бот для пересылки сообщений между VK и Telegram!",
-        reply_markup=reply_markup
+        message_text.strip(), 
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# Инициализация Telegram бота
-application = Application.builder().token(TELEGRAM_TOKEN).build()
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок"""
+    query = update.callback_query
+    await query.answer()
 
-# Хэндлеры команд
-application.add_handler(CommandHandler("start", start))
+    if not query.data.startswith("select_"):
+        return
 
-# Запуск слушателя VK в отдельном потоке
-loop = asyncio.get_event_loop()
-threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
+    user_id = str(query.from_user.id)
+    if user_id != AUTHORIZED_TELEGRAM_USER_ID:
+        await query.edit_message_text(ACCESS_DENIED_MESSAGE)
+        return
 
-# Запуск бота
-application.run_polling()
+    selected_vk_id = int(query.data.split("_")[1])
+    dialog_manager.select_dialog(user_id, selected_vk_id)
+    
+    user_info = get_user_info(selected_vk_id)
+    await query.edit_message_text(
+        f"✅ Выбран диалог с {user_info.get('first_name', 'Неизвестный')} "
+        f"{user_info.get('last_name', 'Пользователь')}"
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения"""
+    user_id = str(update.effective_user.id)
+    if user_id != AUTHORIZED_TELEGRAM_USER_ID:
+        return
+
+    selected_vk_id = dialog_manager.get_selected(user_id)
+    if not selected_vk_id:
+        await update.message.reply_text(DIALOG_NOT_SELECTED_MESSAGE)
+        return
+
+    try:
+        signature = MESSAGE_SIGNATURE
+        
+        if update.message.text:
+            vk.messages.send(
+                user_id=selected_vk_id,
+                message=update.message.text + signature,
+                random_id=0
+            )
+            await update.message.reply_text("✅ Сообщение отправлено")
+
+        elif update.message.photo:
+            photo = await update.message.photo[-1].get_file()
+            filepath = download_file(photo.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                photo_data = upload.photo_messages(filepath)[0]
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"photo{photo_data['owner_id']}_{photo_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Фото отправлено")
+
+        elif update.message.document:
+            doc = await update.message.document.get_file()
+            filepath = download_file(doc.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                doc_data = upload.document_message(filepath, selected_vk_id, "doc")
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Документ отправлен")
+
+        elif update.message.audio:
+            audio = await update.message.audio.get_file()
+            filepath = download_file(audio.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                audio_data = upload.audio(filepath, artist="Исполнитель", title="Трек из Telegram")
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"audio{audio_data['owner_id']}_{audio_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Аудио отправлено")
+
+        elif update.message.voice:
+            voice = await update.message.voice.get_file()
+            filepath = download_file(voice.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                doc_data = upload.document_message(filepath, selected_vk_id, "audio_message")
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Голосовое сообщение отправлено")
+
+    except Exception as e:
+        logger.error(f"Ошибка отправки: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
+    """Обновляет статус ВК"""
+    try:
+        current_time = datetime.now(pytz.timezone(TIMEZONE))
+        uptime = datetime.now(pytz.timezone(TIMEZONE)) - bot_stats.start_time
+        days = uptime.days
+        hours, rem = divmod(uptime.seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        
+        status_text = BOT_STATUS_TEMPLATE.format(
+            uptime=f"{days}д {hours}ч {minutes}м",
+            message_count=bot_stats.message_count,
+            last_time=current_time.strftime('%H:%M')
+        )
+        
+        vk.status.set(text=status_text)
+        logger.info(f"Обновлен статус ВК: {status_text}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка обновления статуса: {e}")
+
+def main():
+    global application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("dialogs", show_dialogs))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.ALL, handle_message))
+
+    application.job_queue.run_repeating(update_status_task, interval=300, first=5)
+
+    loop = asyncio.get_event_loop()
+    threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
+    
+    logger.info("🤖 Бот запущен...")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
