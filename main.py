@@ -104,6 +104,24 @@ def get_user_info(user_id):
         logger.error(f"Ошибка получения информации о пользователе: {e}")
         return {}
 
+def update_vk_status():
+    """Обновляет статус бота в VK"""
+    try:
+        uptime = datetime.now(pytz.timezone(TIMEZONE)) - bot_stats.start_time
+        uptime_str = str(uptime).split('.')[0]  # Убираем миллисекунды
+        last_time_str = bot_stats.last_message_time.strftime("%H:%M:%S") if bot_stats.last_message_time else "N/A"
+        
+        status_text = BOT_STATUS_TEMPLATE.format(
+            uptime=uptime_str,
+            message_count=bot_stats.message_count,
+            last_time=last_time_str
+        )
+
+        vk.status.set(text=status_text)
+        logger.info(f"Обновлен статус ВКонтакте: {status_text}")
+    except Exception as e:
+        logger.error(f"Ошибка обновления статуса в ВК: {e}")
+
 def download_file(url):
     """Скачивает файл и возвращает временный путь"""
     try:
@@ -173,35 +191,45 @@ def vk_listener(loop):
                         forward_to_telegram(user_id, event.text, event.attachments),
                         loop
                     )
+                    update_vk_status()  # Обновляем статус после каждого сообщения
         except Exception as e:
             logger.error(f"Ошибка в VK listener: {e}")
             time.sleep(5)
 
-async def send_media_with_fallback(chat_id, media_type, url, caption):
-    """Отправляет медиафайл с обработкой ошибок"""
+async def send_media(chat_id, media_type, url, caption):
+    """Отправляет медиафайл в Telegram"""
     try:
         logger.info(f"Попытка отправить {media_type}: {url}")
         
-        if media_type == 'photo':
-            filepath = download_file(url)
-            if filepath:
-                try:
-                    with open(filepath, 'rb') as f:
-                        await application.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=f,
-                            caption=caption
-                        )
-                finally:
-                    os.remove(filepath)
-            else:
-                logger.error(f"Не удалось скачать фото: {url}")
-
+        filepath = download_file(url)
+        if filepath:
+            with open(filepath, 'rb') as f:
+                if media_type == 'photo':
+                    await application.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=f,
+                        caption=caption
+                    )
+                elif media_type == 'document':
+                    await application.bot.send_document(
+                        chat_id=chat_id,
+                        document=f,
+                        caption=caption
+                    )
+                elif media_type == 'audio':
+                    await application.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=f,
+                        caption=caption
+                    )
+                os.remove(filepath)
+        else:
+            logger.error(f"Не удалось скачать медиа: {url}")
     except Exception as e:
         logger.error(f"Критическая ошибка отправки медиа: {e}")
 
 async def forward_to_telegram(user_id, text, attachments):
-    """Отправляет сообщение в Telegram"""
+    """Отправляет сообщение и вложения в Telegram"""
     try:
         logger.info(f"Обработка сообщения от {user_id}")
         logger.debug(f"Сырые вложения: {attachments}")
@@ -235,24 +263,32 @@ async def forward_to_telegram(user_id, text, attachments):
                 logger.debug(f"Обработка вложения типа: {attach_type}")
 
                 if attach_type == 'photo':
-                    photo_data = attach.get('photo', {})
-                    
-                    if 'sizes' in photo_data:
-                        sizes = photo_data['sizes']
-                        photo = max(sizes, key=lambda x: x.get('width', 0))
-                        photo_url = photo.get('url')
-                    else:
-                        photo_url = photo_data.get('photo_2560') or \
-                                    photo_data.get('photo_1280') or \
-                                    photo_data.get('photo_807')
-
-                    logger.debug(f"URL фото: {photo_url}")
-                    
+                    photo_url = attach.get('url')
                     if photo_url and is_url_accessible(photo_url):
-                        await send_media_with_fallback(
+                        await send_media(
                             chat_id=TELEGRAM_CHAT_ID,
                             media_type='photo',
                             url=photo_url,
+                            caption=dialog_info
+                        )
+
+                elif attach_type == 'doc':
+                    document_url = attach.get('url')
+                    if document_url and is_url_accessible(document_url):
+                        await send_media(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            media_type='document',
+                            url=document_url,
+                            caption=dialog_info
+                        )
+
+                elif attach_type == 'audio':
+                    audio_url = attach.get('url')
+                    if audio_url and is_url_accessible(audio_url):
+                        await send_media(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            media_type='audio',
+                            url=audio_url,
                             caption=dialog_info
                         )
 
@@ -374,7 +410,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             filepath = download_file(audio.file_path)
             if filepath:
                 upload = vk_api.VkUpload(vk_session)
-                audio_data = upload.audio(filepath, artist="Исполнитель", title="Трек из Telegram")
+                audio_data = upload.audio_messages(filepath, selected_vk_id)
                 vk.messages.send(
                     user_id=selected_vk_id,
                     attachment=f"audio{audio_data['owner_id']}_{audio_data['id']}",
@@ -383,61 +419,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text("✅ Аудио отправлено")
 
-        elif update.message.voice:
-            voice = await update.message.voice.get_file()
-            filepath = download_file(voice.file_path)
-            if filepath:
-                upload = vk_api.VkUpload(vk_session)
-                doc_data = upload.document_message(filepath, selected_vk_id, "audio_message")
-                vk.messages.send(
-                    user_id=selected_vk_id,
-                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
-                    message=signature.strip(),
-                    random_id=0
-                )
-                await update.message.reply_text("✅ Голосовое сообщение отправлено")
-
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        logger.error(f"Ошибка отправки сообщения: {e}")
+        await update.message.reply_text("❌ Ошибка отправки сообщения")
 
-async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
-    """Обновляет статус ВК"""
-    try:
-        current_time = datetime.now(pytz.timezone(TIMEZONE))
-        uptime = datetime.now(pytz.timezone(TIMEZONE)) - bot_stats.start_time
-        days = uptime.days
-        hours, rem = divmod(uptime.seconds, 3600)
-        minutes, seconds = divmod(rem, 60)
-        
-        status_text = BOT_STATUS_TEMPLATE.format(
-            uptime=f"{days}д {hours}ч {minutes}м",
-            message_count=bot_stats.message_count,
-            last_time=current_time.strftime('%H:%M')
-        )
-        
-        vk.status.set(text=status_text)
-        logger.info(f"Обновлен статус ВК: {status_text}")
-            
-    except Exception as e:
-        logger.error(f"Ошибка обновления статуса: {e}")
-
-def main():
-    global application
+# Запуск бота
+async def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("dialogs", show_dialogs))
     application.add_handler(CallbackQueryHandler(handle_callback))
-    application.add_handler(MessageHandler(filters.ALL, handle_message))
-
-    application.job_queue.run_repeating(update_status_task, interval=300, first=5)
+    application.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
-    
-    logger.info("🤖 Бот запущен...")
-    application.run_polling()
 
-if __name__ == "__main__":
-    main()
+    await application.run_polling()
+
+if __name__ == '__main__':
+    asyncio.run(main())
