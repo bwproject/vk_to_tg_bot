@@ -356,74 +356,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения"""
-    user_id = str(update.effective_user.id)
-    if user_id != AUTHORIZED_TELEGRAM_USER_ID:
+    """Обрабатывает входящие текстовые сообщения"""
+    if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
+        await update.message.reply_text(ACCESS_DENIED_MESSAGE)
         return
 
-    selected_vk_id = dialog_manager.get_selected(user_id)
+    selected_vk_id = dialog_manager.get_selected(update.effective_user.id)
     if not selected_vk_id:
         await update.message.reply_text(DIALOG_NOT_SELECTED_MESSAGE)
         return
 
     try:
-        signature = MESSAGE_SIGNATURE
-        
-        if update.message.text:
-            vk.messages.send(
-                user_id=selected_vk_id,
-                message=update.message.text + signature,
-                random_id=0
-            )
-            await update.message.reply_text("✅ Сообщение отправлено")
-
-        elif update.message.photo:
-            photo = await update.message.photo[-1].get_file()
-            filepath = download_file(photo.file_path)
-            if filepath:
-                upload = vk_api.VkUpload(vk_session)
-                photo_data = upload.photo_messages(filepath)[0]
-                vk.messages.send(
-                    user_id=selected_vk_id,
-                    attachment=f"photo{photo_data['owner_id']}_{photo_data['id']}",
-                    message=signature.strip(),
-                    random_id=0
-                )
-                await update.message.reply_text("✅ Фото отправлено")
-
-        elif update.message.document:
-            doc = await update.message.document.get_file()
-            filepath = download_file(doc.file_path)
-            if filepath:
-                upload = vk_api.VkUpload(vk_session)
-                doc_data = upload.document_message(filepath, selected_vk_id, "doc")
-                vk.messages.send(
-                    user_id=selected_vk_id,
-                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
-                    message=signature.strip(),
-                    random_id=0
-                )
-                await update.message.reply_text("✅ Документ отправлен")
-
-        elif update.message.audio:
-            audio = await update.message.audio.get_file()
-            filepath = download_file(audio.file_path)
-            if filepath:
-                upload = vk_api.VkUpload(vk_session)
-                audio_data = upload.audio_messages(filepath, selected_vk_id)
-                vk.messages.send(
-                    user_id=selected_vk_id,
-                    attachment=f"audio{audio_data['owner_id']}_{audio_data['id']}",
-                    message=signature.strip(),
-                    random_id=0
-                )
-                await update.message.reply_text("✅ Аудио отправлено")
-
+        message_text = update.message.text.strip() + MESSAGE_SIGNATURE
+        vk.messages.send(
+            user_id=selected_vk_id,
+            message=message_text,
+            random_id=0
+        )
+        await update.message.reply_text("✅ Сообщение отправлено")
     except Exception as e:
         logger.error(f"Ошибка отправки сообщения: {e}")
         await update.message.reply_text("❌ Ошибка отправки сообщения")
 
-# Запуск бота
 async def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
