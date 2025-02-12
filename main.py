@@ -410,7 +410,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
     """Обновляет статус ВК"""
     try:
-        current_time = datetime.now(pytz.timezone('Europe/Moscow'))
+        current_time = datetime.now(pytz.timezone('Asia/Yekaterinburg'))
         uptime = datetime.now() - bot_stats.start_time
         days = uptime.days
         hours, rem = divmod(uptime.seconds, 3600)
