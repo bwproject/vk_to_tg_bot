@@ -32,6 +32,7 @@ VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")  # Временная зона
 
 # Сообщения
 ACCESS_DENIED_MESSAGE = os.getenv("ACCESS_DENIED_MESSAGE", "⛔ Доступ запрещен")
@@ -410,7 +411,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
     """Обновляет статус ВК"""
     try:
-        current_time = datetime.now(pytz.timezone('Asia/Yekaterinburg'))
+        # Используем переменную TIMEZONE
+        current_time = datetime.now(pytz.timezone(TIMEZONE))
         uptime = datetime.now() - bot_stats.start_time
         days = uptime.days
         hours, rem = divmod(uptime.seconds, 3600)
