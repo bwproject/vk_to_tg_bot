@@ -70,6 +70,7 @@ def is_url_accessible(url):
 def parse_vk_attachment(attach_str: str) -> dict:
     """Парсит строковое представление вложения ВК"""
     try:
+        logger.debug(f"Парсинг вложения: {attach_str}")
         parts = attach_str.split('_')
         if len(parts) < 2:
             return None
@@ -169,8 +170,11 @@ def vk_listener(loop):
 async def send_media(media_type, url, caption):
     """Отправляет медиафайл в Telegram"""
     try:
+        logger.info(f"Попытка отправить {media_type}: {url}")
+        
         filepath = download_file(url)
         if not filepath:
+            logger.error("Не удалось скачать файл")
             return
 
         with open(filepath, 'rb') as file:
@@ -186,13 +190,15 @@ async def send_media(media_type, url, caption):
                     document=file,
                     caption=caption
                 )
-        os.remove(filepath)
         
+        os.remove(filepath)
+        logger.info(f"Успешно отправлено: {media_type}")
+
     except Exception as e:
         logger.error(f"Ошибка отправки медиа: {e}")
 
 async def forward_to_telegram(user_id, text, attachments):
-    """Отправляет сообщение в Telegram"""
+    """Отправляет сообщение и вложения из ВК в Telegram"""
     try:
         bot_stats.last_message_time = datetime.now(pytz.timezone(TIMEZONE))
         bot_stats.message_count += 1
@@ -200,28 +206,44 @@ async def forward_to_telegram(user_id, text, attachments):
         user_info = get_user_info(user_id)
         dialog_info = f"📨 От {user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
 
+        # Отправка текста сообщения
         await application.bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
             text=f"{dialog_info}:\n{text}"
         )
 
+        # Обработка вложений
         for attach in attachments:
             try:
+                logger.debug(f"Обработка вложения: {attach}")
+                
+                # Если вложение — строка, парсим её
                 if isinstance(attach, str):
                     parsed = parse_vk_attachment(attach)
                     if not parsed:
+                        logger.warning(f"Не удалось распарсить вложение: {attach}")
                         continue
                     attach = parsed
 
+                attach_type = attach.get('type')
                 media_url = None
-                if attach['type'] == 'photo':
+
+                # Обработка фото
+                if attach_type == 'photo':
                     sizes = attach.get('photo', {}).get('sizes', [])
                     if sizes:
                         photo = max(sizes, key=lambda x: x.get('width', 0))
                         media_url = photo.get('url')
 
-                if media_url:
-                    await send_media('photo', media_url, dialog_info)
+                # Обработка документов
+                elif attach_type == 'doc':
+                    media_url = attach.get('doc', {}).get('url')
+
+                # Если URL найден, отправляем медиа
+                if media_url and is_url_accessible(media_url):
+                    await send_media(attach_type, media_url, dialog_info)
+                else:
+                    logger.warning(f"Не удалось получить URL для {attach_type}: {media_url}")
 
             except Exception as e:
                 logger.error(f"Ошибка обработки вложения: {e}")
@@ -230,12 +252,14 @@ async def forward_to_telegram(user_id, text, attachments):
         logger.error(f"Ошибка пересылки: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает команду /start"""
     if str(update.effective_user.id) != AUTHORIZED_TELEGRAM_USER_ID:
         await update.message.reply_text(ACCESS_DENIED_MESSAGE)
         return
     await show_dialogs(update, context)
 
 async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список диалогов"""
     dialogs = dialog_manager.get_dialogs()
     if not dialogs:
         await update.message.reply_text("🤷 Нет активных диалогов")
@@ -263,6 +287,7 @@ async def show_dialogs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок"""
     query = update.callback_query
     await query.answer()
 
@@ -284,6 +309,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения"""
     user_id = str(update.effective_user.id)
     if user_id != AUTHORIZED_TELEGRAM_USER_ID:
         return
@@ -323,6 +349,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
+    """Обновляет статус ВК"""
     try:
         current_time = datetime.now(pytz.timezone(TIMEZONE))
         uptime = datetime.now(pytz.timezone(TIMEZONE)) - bot_stats.start_time
