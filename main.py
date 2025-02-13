@@ -46,7 +46,7 @@ if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM
     raise ValueError("Не все обязательные переменные окружения заданы в .env!")
 
 # Инициализация VK
-vk_session = vk_api.VkApi(token=VK_USER_TOKEN, scope='photos,messages,docs')
+vk_session = vk_api.VkApi(token=VK_USER_TOKEN, scope='photos,messages,docs,audio')
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 
@@ -67,27 +67,34 @@ def is_url_accessible(url):
         logger.warning(f"URL недоступен: {url}, ошибка: {e}")
         return False
 
-def parse_vk_attachment(attach_str: str) -> dict:
-    """Парсит строковое представление вложения ВК"""
+def parse_vk_attachment(attachment) -> dict:
+    """Парсит вложения ВК разных форматов"""
     try:
-        logger.debug(f"Парсинг вложения: {attach_str}")
-        parts = attach_str.split('_')
-        if len(parts) < 2:
-            return None
+        # Если вложение уже словарь
+        if isinstance(attachment, dict):
+            return attachment
+            
+        # Если вложение - строка
+        if isinstance(attachment, str):
+            parts = attachment.split('_')
+            if len(parts) < 2:
+                return None
 
-        attach_type = parts[0].replace('attach1_', '')
-        if '-' in attach_type:
-            attach_type = attach_type.split('-')[0]
+            # Обработка формата attach1_type123_456
+            if parts[0].startswith('attach1'):
+                parts = parts[0].split('-')[-1:] + parts[1:]
 
-        owner_id = parts[1].split('-')[-1].replace(' ', '')
-        media_id = parts[2] if len(parts) > 2 else None
+            attach_type = parts[0]
+            owner_id = parts[1]
+            media_id = parts[2] if len(parts) > 2 else None
 
-        return {
-            'type': attach_type,
-            'owner_id': owner_id,
-            'id': media_id,
-            'url': f"https://vk.com/{attach_type}{owner_id}_{media_id}"
-        }
+            return {
+                'type': attach_type,
+                'owner_id': owner_id,
+                'id': media_id,
+                'url': f"https://vk.com/{attach_type}{owner_id}_{media_id}"
+            }
+        return None
     except Exception as e:
         logger.error(f"Ошибка парсинга вложения: {e}")
         return None
@@ -158,6 +165,7 @@ def vk_listener(loop):
             for event in longpoll.listen():
                 if event.type == VkEventType.MESSAGE_NEW and event.to_me:
                     user_id = event.user_id
+                    logger.debug(f"Новое сообщение: {event.raw}")
                     dialog_manager.update_dialog(user_id, event.text, event.attachments)
                     asyncio.run_coroutine_threadsafe(
                         forward_to_telegram(user_id, event.text, event.attachments),
@@ -190,6 +198,12 @@ async def send_media(media_type, url, caption):
                     document=file,
                     caption=caption
                 )
+            elif media_type == 'audio':
+                await application.bot.send_audio(
+                    chat_id=TELEGRAM_CHAT_ID,
+                    audio=file,
+                    caption=caption
+                )
         
         os.remove(filepath)
         logger.info(f"Успешно отправлено: {media_type}")
@@ -215,41 +229,45 @@ async def forward_to_telegram(user_id, text, attachments):
         # Обработка вложений
         for attach in attachments:
             try:
-                logger.debug(f"Обработка вложения: {attach}")
+                logger.debug(f"Сырые данные вложения: {attach}")
                 
-                # Если вложение — строка, парсим её
-                if isinstance(attach, str):
-                    parsed = parse_vk_attachment(attach)
-                    if not parsed:
-                        logger.warning(f"Не удалось распарсить вложение: {attach}")
-                        continue
-                    attach = parsed
+                parsed = parse_vk_attachment(attach)
+                if not parsed:
+                    logger.warning(f"Не удалось распарсить вложение: {attach}")
+                    continue
 
-                attach_type = attach.get('type')
+                attach_type = parsed.get('type')
                 media_url = None
 
                 # Обработка фото
                 if attach_type == 'photo':
-                    sizes = attach.get('photo', {}).get('sizes', [])
-                    if sizes:
+                    if 'sizes' in parsed:
+                        sizes = parsed['sizes']
                         photo = max(sizes, key=lambda x: x.get('width', 0))
                         media_url = photo.get('url')
+                    else:
+                        media_url = parsed.get('url')
 
                 # Обработка документов
                 elif attach_type == 'doc':
-                    media_url = attach.get('doc', {}).get('url')
+                    media_url = parsed.get('url')
 
-                # Если URL найден, отправляем медиа
+                # Обработка аудио
+                elif attach_type == 'audio':
+                    media_url = parsed.get('url')
+
                 if media_url and is_url_accessible(media_url):
                     await send_media(attach_type, media_url, dialog_info)
                 else:
-                    logger.warning(f"Не удалось получить URL для {attach_type}: {media_url}")
+                    logger.warning(f"Недействительный URL для {attach_type}: {media_url}")
 
             except Exception as e:
-                logger.error(f"Ошибка обработки вложения: {e}")
+                logger.error(f"Ошибка обработки вложения: {e}", exc_info=True)
 
     except Exception as e:
-        logger.error(f"Ошибка пересылки: {e}")
+        logger.error(f"Ошибка пересылки: {e}", exc_info=True)
+
+# ... (остальные функции остаются без изменений: start, show_dialogs, handle_callback, handle_message, update_status_task, main)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает команду /start"""
@@ -344,8 +362,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text("✅ Фото отправлено")
 
+        elif update.message.document:
+            doc = await update.message.document.get_file()
+            filepath = download_file(doc.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                doc_data = upload.document_message(filepath, selected_vk_id, "doc")
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Документ отправлен")
+
+        elif update.message.audio:
+            audio = await update.message.audio.get_file()
+            filepath = download_file(audio.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                audio_data = upload.audio(filepath, artist="Исполнитель", title="Трек из Telegram")
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"audio{audio_data['owner_id']}_{audio_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Аудио отправлено")
+
+        elif update.message.voice:
+            voice = await update.message.voice.get_file()
+            filepath = download_file(voice.file_path)
+            if filepath:
+                upload = vk_api.VkUpload(vk_session)
+                doc_data = upload.document_message(filepath, selected_vk_id, "audio_message")
+                vk.messages.send(
+                    user_id=selected_vk_id,
+                    attachment=f"doc{doc_data['owner_id']}_{doc_data['id']}",
+                    message=signature.strip(),
+                    random_id=0
+                )
+                await update.message.reply_text("✅ Голосовое сообщение отправлено")
+
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
+        logger.error(f"Ошибка отправки: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
