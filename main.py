@@ -63,7 +63,10 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
         sender_name = f"{user_info['first_name']} {user_info['last_name']}"
         
-        text += f"\n👤 {sender_name}: {last_message['text'][:50]}..."
+        # Добавляем пометку, отвечено ли сообщение
+        read_status = "✅ Ответили" if last_message["read_state"] == 1 else "❌ Не отвечено"
+        
+        text += f"\n👤 {sender_name}: {last_message['text'][:50]}... ({read_status})"
         keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
 
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
