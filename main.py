@@ -21,8 +21,9 @@ load_dotenv()
 
 VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not all([VK_USER_TOKEN, TELEGRAM_TOKEN]):
+if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
     raise ValueError("❌ Не все переменные окружения заданы!")
 
 # Инициализация VK API
@@ -110,7 +111,7 @@ async def open_dialog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"✅ Вы выбрали собеседника ID {vk_user_id}. Теперь можно писать ему сообщения.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение выбранному собеседнику в VK"""
+    """Отправляет сообщение выбранному собеседнику в VK с подписью"""
     user_id = str(update.effective_user.id)
     vk_user_id = selected_friends.get(user_id)
 
@@ -118,7 +119,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠ Сначала выберите собеседника через /start.")
         return
 
-    vk.messages.send(user_id=vk_user_id, message=update.message.text, random_id=0)
+    message_text = f"{update.message.text}\n\n📨 Отправлено с помощью Telegram"
+    
+    vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
     await update.message.reply_text("✅ Сообщение отправлено.")
 
 def vk_listener(loop):
@@ -133,7 +136,7 @@ def vk_listener(loop):
                     text = message_data.get('text', '')
 
                     asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 {text}"),
+                        application.bot.send_message(TELEGRAM_CHAT_ID, text=f"📨 {text}"),
                         loop
                     )
 
