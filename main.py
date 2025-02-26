@@ -57,39 +57,30 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
         text = "📩 Последние сообщения:\n"
         keyboard = []
-        skipped_count = 0  # Счётчик пропущенных сообщений (группы)
 
         for msg in msg_list:
             last_message = msg["last_message"]
 
-            # Проверяем, если peer_id указывает на группу (peer_id > 2e9), то пропускаем
-            if msg.get("peer_id", 0) > 2e9:
-                skipped_count += 1
-                continue  # Пропускаем сообщение, если это группа
-
-            peer_id = msg["peer_id"]
+            # Получаем имя отправителя
             user_id = last_message["from_id"]
             user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-            sender_name = f"{user_info['first_name']} {user_info['last_name']}"
+            sender_name = f"{user_info.get('first_name', 'Неизвестно')} {user_info.get('last_name', 'Неизвестно')}"
 
-            # Получаем имя получателя в зависимости от типа сообщения
-            if peer_id <= 2e9:  # Это личное сообщение
+            # Получаем имя получателя
+            recipient_name = "Неизвестно"
+            peer_id = msg["peer_id"]
+            if peer_id <= 2e9:  # Это личное сообщение, получатель — человек
                 try:
                     recipient_info = vk.users.get(user_ids=peer_id, fields="first_name,last_name")[0]
-                    recipient_name = f"{recipient_info['first_name']} {recipient_info['last_name']}"
+                    recipient_name = f"{recipient_info.get('first_name', 'Неизвестно')} {recipient_info.get('last_name', 'Неизвестно')}"
                 except Exception as e:
-                    recipient_name = "Неизвестный пользователь"
-                    logger.error(f"Ошибка при получении информации о пользователе: {e}")
+                    logger.error(f"Ошибка при получении информации о получателе: {e}")
 
             reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
             reply_text = f"Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
 
             text += f"\n👤 От: {recipient_name}\n{last_message['text'][:50]}...\n{reply_status}\n{reply_text}"
             keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
-
-        # Добавляем информацию о пропущенных сообщениях
-        if skipped_count > 0:
-            text += f"\n\n⚠ Пропущено {skipped_count} сообщений из групп."
 
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -158,45 +149,3 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         document = update.message.document.file_id
         vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0, attachment=document)
     else:
-        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
-
-    await update.message.reply_text("✅ Сообщение отправлено.")
-
-def vk_listener(loop):
-    """Слушает новые сообщения из VK"""
-    while True:
-        try:
-            for event in longpoll.listen():
-                if event.type == VkEventType.MESSAGE_NEW and event.to_me:
-                    user_id = event.user_id
-                    message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
-
-                    text = message_data.get('text', '')
-                    # Отправка нового сообщения в Telegram
-                    asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"У Вас новое сообщение из ВК\nОт: {user_id}\n{message_data.get('text', '')}"),
-                        loop
-                    )
-
-        except Exception as e:
-            logger.error(f"Ошибка VK listener: {e}")
-            time.sleep(5)
-
-def main():
-    global application
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(show_latest_messages, pattern="^latest_messages$"))
-    application.add_handler(CallbackQueryHandler(show_friends, pattern="^friends_page_"))
-    application.add_handler(CallbackQueryHandler(open_dialog, pattern="^open_dialog_"))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.ATTACHMENT, handle_message))
-
-    loop = asyncio.get_event_loop()
-    threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
-
-    logger.info("🤖 Бот запущен...")
-    application.run_polling()
-
-if __name__ == "__main__":
-    main()
