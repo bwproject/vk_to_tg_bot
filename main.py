@@ -1,162 +1,128 @@
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
-from telegram import Update
-from telegram.ext import Application, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import asyncio
 import threading
 import os
 import requests
 import logging
+import time
 from datetime import datetime
 import pytz
-import time
+from dotenv import load_dotenv
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения
-from dotenv import load_dotenv
 load_dotenv()
 
 VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
-TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 
-# Проверка переменных окружения
-if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM_USER_ID]):
-    raise ValueError("Не все переменные окружения заданы!")
+if not all([VK_USER_TOKEN, TELEGRAM_TOKEN]):
+    raise ValueError("❌ Не все переменные окружения заданы!")
 
-# Инициализация VK
+# Инициализация VK API
 vk_session = vk_api.VkApi(token=VK_USER_TOKEN)
 vk = vk_session.get_api()
 longpoll = VkLongPoll(vk_session)
 
-class BotStats:
-    def __init__(self):
-        self.start_time = datetime.now(pytz.timezone(TIMEZONE))
-        self.message_count = 0
-        self.post_count = 0
+# Храним выбранных друзей
+selected_friends = {}
 
-bot_stats = BotStats()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выводит главное меню"""
+    keyboard = [
+        [InlineKeyboardButton("📩 Последние сообщения", callback_data="latest_messages")],
+        [InlineKeyboardButton("👥 Открыть список друзей", callback_data="friends_page_0")]
+    ]
+    await update.message.reply_text("📌 Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-def download_file(url):
-    """Скачивает файл и возвращает путь"""
-    try:
-        response = requests.get(url, stream=True, timeout=10)
-        if response.status_code == 200:
-            filename = os.path.basename(url.split('?')[0])
-            filepath = os.path.join("/tmp", filename)
-            with open(filepath, "wb") as f:
-                for chunk in response.iter_content(1024 * 1024):
-                    f.write(chunk)
-            return filepath
-    except Exception as e:
-        logger.error(f"Ошибка загрузки файла: {e}")
-    return None
+async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает последние 5 сообщений"""
+    query = update.callback_query
+    await query.answer()
 
-async def send_media(media_type, url, caption):
-    """Отправляет медиафайл в Telegram"""
-    try:
-        logger.info(f"Отправка {media_type}: {url}")
-        filepath = download_file(url)
-        if not filepath:
-            logger.error("Не удалось скачать файл")
-            return
+    messages = vk.messages.getConversations(count=5)
+    msg_list = messages.get("items", [])
 
-        with open(filepath, 'rb') as file:
-            if media_type == 'photo':
-                await application.bot.send_photo(TELEGRAM_CHAT_ID, photo=file, caption=caption)
-            elif media_type == 'doc':
-                await application.bot.send_document(TELEGRAM_CHAT_ID, document=file, caption=caption)
-            elif media_type == 'audio':
-                await application.bot.send_audio(TELEGRAM_CHAT_ID, audio=file, caption=caption)
-        
-        os.remove(filepath)
-        logger.info(f"Файл {media_type} отправлен")
+    if not msg_list:
+        await query.edit_message_text("❌ Нет новых сообщений.")
+        return
 
-    except Exception as e:
-        logger.error(f"Ошибка отправки медиа: {e}")
-
-async def forward_to_telegram(user_id, text, attachments):
-    """Пересылает сообщение и вложения из ВК в Telegram"""
-    try:
-        bot_stats.message_count += 1
-
+    text = "📩 Последние сообщения:\n"
+    for msg in msg_list:
+        last_message = msg["last_message"]
+        user_id = last_message["from_id"]
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-        sender_name = f"{user_info.get('first_name', 'Неизвестный')} {user_info.get('last_name', '')}"
+        sender_name = f"{user_info['first_name']} {user_info['last_name']}"
+        text += f"\n👤 {sender_name}: {last_message['text'][:50]}..."
 
-        message_text = f"📨 {sender_name}:\n{text}"
-        await application.bot.send_message(TELEGRAM_CHAT_ID, text=message_text)
+    await query.edit_message_text(text)
 
-        for attach in attachments:
-            attach_type = attach['type']
-            media = attach[attach_type]
+async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выводит список друзей с пагинацией"""
+    query = update.callback_query
+    await query.answer()
 
-            if attach_type == 'photo':
-                sizes = media.get('sizes', [])
-                media_url = max(sizes, key=lambda x: x.get('width', 0)).get('url', '')
+    page = int(query.data.split("_")[-1])
+    friends = vk.friends.get(order="hints", fields="first_name,last_name")
+    friends_list = friends.get("items", [])
 
-            elif attach_type in ['doc', 'audio', 'video']:
-                media_url = media.get('url', '')
+    if not friends_list:
+        await query.edit_message_text("❌ У вас нет друзей в VK.")
+        return
 
-            elif attach_type == 'audio_message':
-                media_url = media.get('link_mp3', '')
+    per_page = 5
+    start = page * per_page
+    end = start + per_page
+    friends_page = friends_list[start:end]
 
-            else:
-                logger.warning(f"Неизвестный тип вложения: {attach_type}")
-                continue
+    keyboard = [[InlineKeyboardButton(f"{f['first_name']} {f['last_name']}", callback_data=f"friend_{f['id']}")] for f in friends_page]
 
-            if media_url:
-                await send_media(attach_type, media_url, f"{sender_name} отправил {attach_type}")
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅ Назад", callback_data=f"friends_page_{page-1}"))
+    if end < len(friends_list):
+        nav_buttons.append(InlineKeyboardButton("➡ Вперед", callback_data=f"friends_page_{page+1}"))
 
-    except Exception as e:
-        logger.error(f"Ошибка пересылки: {e}", exc_info=True)
+    if nav_buttons:
+        keyboard.append(nav_buttons)
 
-async def forward_post_to_telegram(post):
-    """Пересылает новый пост из VK в Telegram"""
-    try:
-        bot_stats.post_count += 1
+    await query.edit_message_text("👥 Выберите друга:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-        owner_id = post['owner_id']
-        post_id = post['id']
-        post_link = f"https://vk.com/wall{owner_id}_{post_id}"
-        text = post.get('text', '')
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок"""
+    query = update.callback_query
+    await query.answer()
 
-        message_text = f"📢 Новый пост:\n{text}\n🔗 [Ссылка на пост]({post_link})"
-        await application.bot.send_message(TELEGRAM_CHAT_ID, text=message_text, parse_mode="Markdown")
+    if query.data == "latest_messages":
+        await show_latest_messages(update, context)
+    elif query.data.startswith("friends_page_"):
+        await show_friends(update, context)
+    elif query.data.startswith("friend_"):
+        user_id = str(update.effective_user.id)
+        vk_user_id = int(query.data.split("_")[1])
+        selected_friends[user_id] = vk_user_id
+        await query.edit_message_text(f"✅ Вы выбрали друга ID {vk_user_id}. Теперь можно писать ему сообщения.")
 
-        attachments = post.get('attachments', [])
-        for attach in attachments:
-            attach_type = attach['type']
-            media = attach[attach_type]
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сообщение выбранному другу в VK"""
+    user_id = str(update.effective_user.id)
+    vk_user_id = selected_friends.get(user_id)
 
-            if attach_type == 'photo':
-                sizes = media.get('sizes', [])
-                media_url = max(sizes, key=lambda x: x.get('width', 0)).get('url', '')
+    if not vk_user_id:
+        await update.message.reply_text("⚠ Сначала выберите друга через /start.")
+        return
 
-            elif attach_type in ['doc', 'audio', 'video']:
-                media_url = media.get('url', '')
-
-            elif attach_type == 'link':
-                media_url = media.get('url', '')
-                await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🔗 [Ссылка]({media_url})", parse_mode="Markdown")
-                continue
-
-            else:
-                logger.warning(f"Неизвестный тип вложения в посте: {attach_type}")
-                continue
-
-            if media_url:
-                await send_media(attach_type, media_url, "Вложение из поста")
-
-    except Exception as e:
-        logger.error(f"Ошибка пересылки поста: {e}", exc_info=True)
+    vk.messages.send(user_id=vk_user_id, message=update.message.text, random_id=0)
+    await update.message.reply_text("✅ Сообщение отправлено.")
 
 def vk_listener(loop):
-    """Слушает события из VK"""
+    """Слушает новые сообщения из VK"""
     while True:
         try:
             for event in longpoll.listen():
@@ -165,31 +131,27 @@ def vk_listener(loop):
                     message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
 
                     text = message_data.get('text', '')
-                    attachments = message_data.get('attachments', [])
 
                     asyncio.run_coroutine_threadsafe(
-                        forward_to_telegram(user_id, text, attachments),
-                        loop
-                    )
-
-                elif event.type == VkEventType.WALL_POST_NEW:
-                    post_data = event.raw
-                    asyncio.run_coroutine_threadsafe(
-                        forward_post_to_telegram(post_data),
+                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 {text}"),
                         loop
                     )
 
         except Exception as e:
-            logger.error(f"Ошибка в VK listener: {e}")
+            logger.error(f"Ошибка VK listener: {e}")
             time.sleep(5)
 
 def main():
     global application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT, handle_message))
+
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
-    
+
     logger.info("🤖 Бот запущен...")
     application.run_polling()
 
