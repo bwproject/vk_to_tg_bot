@@ -42,7 +42,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📌 Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает последние 5 сообщений"""
+    """Показывает последние 5 сообщений с кнопками"""
     query = update.callback_query
     await query.answer()
 
@@ -54,14 +54,18 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     text = "📩 Последние сообщения:\n"
+    keyboard = []
+
     for msg in msg_list:
         last_message = msg["last_message"]
         user_id = last_message["from_id"]
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
         sender_name = f"{user_info['first_name']} {user_info['last_name']}"
+        
         text += f"\n👤 {sender_name}: {last_message['text'][:50]}..."
+        keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
 
-    await query.edit_message_text(text)
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выводит список друзей с пагинацией"""
@@ -81,7 +85,7 @@ async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     end = start + per_page
     friends_page = friends_list[start:end]
 
-    keyboard = [[InlineKeyboardButton(f"{f['first_name']} {f['last_name']}", callback_data=f"friend_{f['id']}")] for f in friends_page]
+    keyboard = [[InlineKeyboardButton(f"{f['first_name']} {f['last_name']}", callback_data=f"open_dialog_{f['id']}")] for f in friends_page]
 
     nav_buttons = []
     if page > 0:
@@ -94,28 +98,24 @@ async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text("👥 Выберите друга:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает нажатия кнопок"""
+async def open_dialog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Открывает диалог с выбранным пользователем"""
     query = update.callback_query
     await query.answer()
 
-    if query.data == "latest_messages":
-        await show_latest_messages(update, context)
-    elif query.data.startswith("friends_page_"):
-        await show_friends(update, context)
-    elif query.data.startswith("friend_"):
-        user_id = str(update.effective_user.id)
-        vk_user_id = int(query.data.split("_")[1])
-        selected_friends[user_id] = vk_user_id
-        await query.edit_message_text(f"✅ Вы выбрали друга ID {vk_user_id}. Теперь можно писать ему сообщения.")
+    user_id = str(update.effective_user.id)
+    vk_user_id = int(query.data.split("_")[-1])
+    selected_friends[user_id] = vk_user_id
+
+    await query.edit_message_text(f"✅ Вы выбрали собеседника ID {vk_user_id}. Теперь можно писать ему сообщения.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение выбранному другу в VK"""
+    """Отправляет сообщение выбранному собеседнику в VK"""
     user_id = str(update.effective_user.id)
     vk_user_id = selected_friends.get(user_id)
 
     if not vk_user_id:
-        await update.message.reply_text("⚠ Сначала выберите друга через /start.")
+        await update.message.reply_text("⚠ Сначала выберите собеседника через /start.")
         return
 
     vk.messages.send(user_id=vk_user_id, message=update.message.text, random_id=0)
@@ -146,7 +146,9 @@ def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(CallbackQueryHandler(show_latest_messages, pattern="^latest_messages$"))
+    application.add_handler(CallbackQueryHandler(show_friends, pattern="^friends_page_"))
+    application.add_handler(CallbackQueryHandler(open_dialog, pattern="^open_dialog_"))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     loop = asyncio.get_event_loop()
