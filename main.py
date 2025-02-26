@@ -1,11 +1,10 @@
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import asyncio
 import threading
 import os
-import requests
 import logging
 import time
 from datetime import datetime
@@ -73,8 +72,15 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             # Добавляем пометку, отвечено ли сообщение
             read_status = "✅ Ответили" if last_message.get("read_state") == 1 else "❌ Не отвечено"
             
-            text += f"\n👤 {sender_name}: {last_message['text'][:50]}... ({read_status})"
-            keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+            # Получаем текст ответа, если он есть
+            reply_text = ""
+            if last_message.get("reply_message"):
+                reply_text = f"Ответ: {last_message['reply_message']['text']}"
+            else:
+                reply_text = "Нет ответа."
+
+            text += f"\n\nОт: {sender_name}\n{last_message['text'][:50]}...\n{read_status}\n{reply_text}"
+            keyboard.append([InlineKeyboardButton("Перейти к диалогу", callback_data=f"open_dialog_{user_id}")])
 
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -125,7 +131,7 @@ async def open_dialog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"✅ Вы выбрали собеседника ID {vk_user_id}. Теперь можно писать ему сообщения.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение выбранному собеседнику в VK с подписью"""
+    """Отправляет сообщение выбранному собеседнику в VK с подписью и вложениями"""
     user_id = str(update.effective_user.id)
     vk_user_id = selected_friends.get(user_id)
 
@@ -133,9 +139,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠ Сначала выберите собеседника через /start.")
         return
 
+    # Проверка, есть ли вложение в сообщении
     message_text = f"{update.message.text}\n\n📨 Отправлено с помощью Telegram"
-    
-    vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
+
+    # Обработка вложений
+    if update.message.photo:
+        photo = update.message.photo[-1].get_file()  # Получаем самое большое фото
+        photo.download('photo.jpg')  # Скачиваем на сервер
+        photo_url = 'photo.jpg'
+
+        # Отправка фото
+        vk.messages.send(user_id=vk_user_id, message=message_text, attachment=f'photo{photo_url}', random_id=0)
+    elif update.message.document:
+        document = update.message.document.get_file()  # Получаем документ
+        document.download('document.pdf')  # Скачиваем на сервер
+        document_url = 'document.pdf'
+
+        # Отправка документа
+        vk.messages.send(user_id=vk_user_id, message=message_text, attachment=f'doc{document_url}', random_id=0)
+    else:
+        # Отправка только текста
+        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
+
     await update.message.reply_text("✅ Сообщение отправлено.")
 
 def vk_listener(loop):
@@ -148,9 +173,21 @@ def vk_listener(loop):
                     message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
 
                     text = message_data.get('text', '')
+                    sender_name = f"{message_data['from_id']}"
+
+                    # Отправляем сообщение в Telegram
+                    message_text = f"📩 У Вас новое сообщение из ВК\nОт: {sender_name}\nТекст: {text}"
+
+                    # Если есть вложения, добавим их
+                    if 'attachments' in message_data:
+                        for attachment in message_data['attachments']:
+                            if attachment['type'] == 'photo':
+                                message_text += f"\nФото: {attachment['photo']['sizes'][-1]['url']}"
+                            elif attachment['type'] == 'doc':
+                                message_text += f"\nДокумент: {attachment['doc']['url']}"
 
                     asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 {text}"),
+                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=message_text),
                         loop
                     )
 
@@ -167,6 +204,7 @@ def main():
     application.add_handler(CallbackQueryHandler(show_friends, pattern="^friends_page_"))
     application.add_handler(CallbackQueryHandler(open_dialog, pattern="^open_dialog_"))
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.DOCUMENT, handle_message))
 
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
