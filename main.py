@@ -84,7 +84,7 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 reply_text += "\n📎 Вложения: " + ", ".join([attachment['type'] for attachment in last_message['reply_message']['attachments']])
 
             text += f"\n👤 От: {recipient_name}\nТекст: {text_message}\n{reply_status}\n{reply_text}"
-            keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+            keyboard.append([InlineKeyboardButton(f"{recipient_name} ({user_id})", callback_data=f"open_dialog_{user_id}")])
 
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
