@@ -53,21 +53,24 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = []
 
         for msg in messages:
+            conversation = msg["conversation"]
             last_message = msg["last_message"]
-            user_id = last_message["from_id"]
 
-            # Определяем, это пользователь или сообщество
-            sender_name = "Неизвестно"
-            if user_id > 0:
+            # Определение ID собеседника
+            peer_id = conversation["peer"]["id"]
+
+            # Определение имени собеседника
+            recipient_name = "Неизвестно"
+            if peer_id > 0:
                 try:
-                    user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-                    sender_name = f"{user_info['first_name']} {user_info['last_name']} ({user_id})"
+                    user_info = vk.users.get(user_ids=peer_id, fields="first_name,last_name")[0]
+                    recipient_name = f"{user_info['first_name']} {user_info['last_name']} ({peer_id})"
                 except Exception:
                     pass
             else:
                 try:
-                    group_info = vk.groups.getById(group_id=abs(user_id))[0]
-                    sender_name = f"{group_info['name']} ({user_id})"
+                    group_info = vk.groups.getById(group_id=abs(peer_id))[0]
+                    recipient_name = f"{group_info['name']} ({peer_id})"
                 except Exception:
                     pass
 
@@ -82,8 +85,8 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             if 'attachments' in last_message.get("reply_message", {}):
                 reply_text += "\n📎 Вложения: " + ", ".join([attachment['type'] for attachment in last_message['reply_message']['attachments']])
 
-            text += f"\n👤 От: {sender_name}\nТекст: {text_message}\n{reply_status}\n{reply_text}\n==========="
-            keyboard.append([InlineKeyboardButton(f"{sender_name}", callback_data=f"open_dialog_{user_id}")])
+            text += f"\n👤 От: {recipient_name}\nТекст: {text_message}\n{reply_status}\n{reply_text}\n==========="
+            keyboard.append([InlineKeyboardButton(f"{recipient_name}", callback_data=f"open_dialog_{peer_id}")])
 
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
