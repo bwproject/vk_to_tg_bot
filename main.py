@@ -47,57 +47,62 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    messages = vk.messages.getConversations(count=5)
-    msg_list = messages.get("items", [])
+    try:
+        messages = vk.messages.getConversations(count=5)
+        msg_list = messages.get("items", [])
 
-    if not msg_list:
-        await query.edit_message_text("❌ Нет новых сообщений.")
-        return
+        if not msg_list:
+            await query.edit_message_text("❌ Нет новых сообщений.")
+            return
 
-    text = "📩 Последние сообщения:\n"
-    keyboard = []
-    skipped_count = 0  # Счётчик пропущенных сообщений без peer_id
+        text = "📩 Последние сообщения:\n"
+        keyboard = []
+        skipped_count = 0  # Счётчик пропущенных сообщений без peer_id
 
-    for msg in msg_list:
-        last_message = msg["last_message"]
+        for msg in msg_list:
+            last_message = msg["last_message"]
 
-        # Проверяем, есть ли ключ peer_id
-        if 'peer_id' not in msg:
-            skipped_count += 1
-            continue  # Пропускаем сообщение, если peer_id нет
+            # Проверяем, есть ли ключ peer_id
+            if 'peer_id' not in msg:
+                skipped_count += 1
+                continue  # Пропускаем сообщение, если peer_id нет
 
-        peer_id = msg["peer_id"]
-        user_id = last_message["from_id"]
-        user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-        sender_name = f"{user_info['first_name']} {user_info['last_name']}"
+            peer_id = msg["peer_id"]
+            user_id = last_message["from_id"]
+            user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
+            sender_name = f"{user_info['first_name']} {user_info['last_name']}"
 
-        # Получаем имя получателя в зависимости от типа сообщения
-        if peer_id > 2e9:  # Это группа или чат
-            try:
-                chat_info = vk.messages.getConversationById(peer_id=peer_id)
-                recipient_name = chat_info['conversation']['peer']['id']  # Получаем название группы
-            except Exception as e:
-                recipient_name = "Неизвестная группа"
-                logger.error(f"Ошибка при получении информации о группе: {e}")
-        else:  # Это личное сообщение
-            try:
-                recipient_info = vk.users.get(user_ids=peer_id, fields="first_name,last_name")[0]
-                recipient_name = f"{recipient_info['first_name']} {recipient_info['last_name']}"
-            except Exception as e:
-                recipient_name = "Неизвестный пользователь"
-                logger.error(f"Ошибка при получении информации о пользователе: {e}")
+            # Получаем имя получателя в зависимости от типа сообщения
+            if peer_id > 2e9:  # Это группа или чат
+                try:
+                    chat_info = vk.messages.getConversationById(peer_id=peer_id)
+                    recipient_name = chat_info['conversation']['peer']['id']  # Получаем название группы
+                except Exception as e:
+                    recipient_name = "Неизвестная группа"
+                    logger.error(f"Ошибка при получении информации о группе: {e}")
+            else:  # Это личное сообщение
+                try:
+                    recipient_info = vk.users.get(user_ids=peer_id, fields="first_name,last_name")[0]
+                    recipient_name = f"{recipient_info['first_name']} {recipient_info['last_name']}"
+                except Exception as e:
+                    recipient_name = "Неизвестный пользователь"
+                    logger.error(f"Ошибка при получении информации о пользователе: {e}")
 
-        reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
-        reply_text = f"Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
+            reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
+            reply_text = f"Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
 
-        text += f"\n👤 От: {recipient_name}\n{last_message['text'][:50]}...\n{reply_status}\n{reply_text}"
-        keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+            text += f"\n👤 От: {recipient_name}\n{last_message['text'][:50]}...\n{reply_status}\n{reply_text}"
+            keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
 
-    # Добавляем информацию о пропущенных сообщениях
-    if skipped_count > 0:
-        text += f"\n\n⚠ Пропущено {skipped_count} сообщений без peer_id."
+        # Добавляем информацию о пропущенных сообщениях
+        if skipped_count > 0:
+            text += f"\n\n⚠ Пропущено {skipped_count} сообщений без peer_id."
 
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logger.error(f"Ошибка при получении сообщений: {e}")
+        await query.edit_message_text("❌ Не удалось получить сообщения.")
 
 async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выводит список друзей с пагинацией"""
