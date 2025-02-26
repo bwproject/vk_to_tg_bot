@@ -64,16 +64,21 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         sender_name = f"{user_info['first_name']} {user_info['last_name']}"
 
         # Получаем имя получателя в зависимости от типа сообщения
-        if 'peer_id' in msg:
-            recipient_id = msg['peer_id']
-            if recipient_id > 2e9:  # Это группа или чат
-                chat_info = vk.messages.getConversationById(peer_id=recipient_id)
-                recipient_name = chat_info['conversation']['peer']['id']  # Получаем имя группы/чата
-            else:  # Это личное сообщение
-                recipient_info = vk.users.get(user_ids=recipient_id, fields="first_name,last_name")[0]
+        peer_id = msg["peer_id"]
+        if peer_id > 2e9:  # Это группа или чат
+            try:
+                chat_info = vk.messages.getConversationById(peer_id=peer_id)
+                recipient_name = chat_info['conversation']['peer']['id']  # Получаем название группы
+            except Exception as e:
+                recipient_name = "Неизвестная группа"
+                logger.error(f"Ошибка при получении информации о группе: {e}")
+        else:  # Это личное сообщение
+            try:
+                recipient_info = vk.users.get(user_ids=peer_id, fields="first_name,last_name")[0]
                 recipient_name = f"{recipient_info['first_name']} {recipient_info['last_name']}"
-        else:
-            recipient_name = "Неизвестный"
+            except Exception as e:
+                recipient_name = "Неизвестный пользователь"
+                logger.error(f"Ошибка при получении информации о пользователе: {e}")
 
         reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
         reply_text = f"Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
@@ -134,19 +139,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠ Сначала выберите собеседника через /start.")
         return
 
-    message_text = f"{update.message.text}\n\n{MESSAGE_SIGNATURE}"
+    message_text = f"{update.message.text}\n\n📨 {MESSAGE_SIGNATURE}"
     
-    if update.message.photo:
-        file = update.message.photo[-1].get_file()
-        file.download(f"{file.file_id}.jpg")
-        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0, attachment=f"photo{file.file_id}")
-    elif update.message.document:
-        file = update.message.document.get_file()
-        file.download(f"{file.file_id}.pdf")
-        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0, attachment=f"doc{file.file_id}")
-    else:
-        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
-
+    vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
     await update.message.reply_text("✅ Сообщение отправлено.")
 
 def vk_listener(loop):
@@ -159,11 +154,11 @@ def vk_listener(loop):
                     message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
 
                     text = message_data.get('text', '')
-                    if text:
-                        asyncio.run_coroutine_threadsafe(
-                            application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 У вас новое сообщение из ВК\nОт: {user_id}\n{message_data.get('text', '')}"),
-                            loop
-                        )
+
+                    asyncio.run_coroutine_threadsafe(
+                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 У Вас новое сообщение из ВК\nОт: {sender_name}\n{message_data['text'][:50]}..."),
+                        loop
+                    )
 
         except Exception as e:
             logger.error(f"Ошибка VK listener: {e}")
