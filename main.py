@@ -57,15 +57,15 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
         text = "📩 Последние сообщения:\n"
         keyboard = []
-        skipped_count = 0  # Счётчик пропущенных сообщений без peer_id
+        skipped_count = 0  # Счётчик пропущенных сообщений (группы)
 
         for msg in msg_list:
             last_message = msg["last_message"]
 
-            # Проверяем, есть ли ключ peer_id
-            if 'peer_id' not in msg:
+            # Проверяем, если peer_id указывает на группу (peer_id > 2e9), то пропускаем
+            if msg.get("peer_id", 0) > 2e9:
                 skipped_count += 1
-                continue  # Пропускаем сообщение, если peer_id нет
+                continue  # Пропускаем сообщение, если это группа
 
             peer_id = msg["peer_id"]
             user_id = last_message["from_id"]
@@ -73,14 +73,7 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             sender_name = f"{user_info['first_name']} {user_info['last_name']}"
 
             # Получаем имя получателя в зависимости от типа сообщения
-            if peer_id > 2e9:  # Это группа или чат
-                try:
-                    chat_info = vk.messages.getConversationById(peer_id=peer_id)
-                    recipient_name = chat_info['conversation']['peer']['id']  # Получаем название группы
-                except Exception as e:
-                    recipient_name = "Неизвестная группа"
-                    logger.error(f"Ошибка при получении информации о группе: {e}")
-            else:  # Это личное сообщение
+            if peer_id <= 2e9:  # Это личное сообщение
                 try:
                     recipient_info = vk.users.get(user_ids=peer_id, fields="first_name,last_name")[0]
                     recipient_name = f"{recipient_info['first_name']} {recipient_info['last_name']}"
@@ -96,7 +89,7 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # Добавляем информацию о пропущенных сообщениях
         if skipped_count > 0:
-            text += f"\n\n⚠ Пропущено {skipped_count} сообщений без peer_id."
+            text += f"\n\n⚠ Пропущено {skipped_count} сообщений из групп."
 
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
