@@ -63,15 +63,15 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
         sender_name = f"{user_info['first_name']} {user_info['last_name']}"
         
-        recipient_id = msg['conversation']['peer']['id']
-        recipient_info = vk.users.get(user_ids=recipient_id, fields="first_name,last_name")[0]
+        # Получаем имя получателя
+        recipient_info = vk.users.get(user_ids=msg["chat_id"], fields="first_name,last_name")[0]
         recipient_name = f"{recipient_info['first_name']} {recipient_info['last_name']}"
         
-        replied = last_message.get("reply_message", None)
-        reply_text = f"Ответ: {replied['text']}" if replied else "Нет ответа"
+        reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
+        reply_text = f"Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
         
-        text += f"\n👤 От: {sender_name}\nТекст: {last_message['text'][:50]}...\nОтвечено: {reply_text}"
-        keyboard.append([InlineKeyboardButton(f"Перейти в диалог с {recipient_name}", callback_data=f"open_dialog_{recipient_id}")])
+        text += f"\n👤 От: {recipient_name}\n{last_message['text'][:50]}...\n{reply_status}\n{reply_text}"
+        keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
 
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -128,18 +128,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message_text = f"{update.message.text}\n\n{MESSAGE_SIGNATURE}"
     
+    # Обработка вложений
     if update.message.photo:
-        # Отправка фото
-        photo_file = update.message.photo[-1].file_id
-        file = await application.bot.get_file(photo_file)
-        file_path = file.file_path
-        vk.messages.send(user_id=vk_user_id, attachment=file_path, random_id=0)
+        file = update.message.photo[-1].get_file()
+        file.download(f"photo_{update.message.message_id}.jpg")
+        vk.messages.send(user_id=vk_user_id, message=message_text, attachment=f"photo{update.message.message_id}_0", random_id=0)
     elif update.message.document:
-        # Отправка документа
-        document_file = update.message.document.file_id
-        file = await application.bot.get_file(document_file)
-        file_path = file.file_path
-        vk.messages.send(user_id=vk_user_id, attachment=file_path, random_id=0)
+        file = update.message.document.get_file()
+        file.download(f"document_{update.message.message_id}.pdf")
+        vk.messages.send(user_id=vk_user_id, message=message_text, attachment=f"doc{update.message.message_id}_0", random_id=0)
     else:
         vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
 
@@ -154,15 +151,10 @@ def vk_listener(loop):
                     user_id = event.user_id
                     message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
 
-                    text = message_data.get('text', '')
-                    user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-                    sender_name = f"{user_info['first_name']} {user_info['last_name']}"
-
-                    # Добавление текста "У вас новое сообщение из VK"
-                    full_text = f"📩 У вас новое сообщение из ВК\nОт: {sender_name}\n{text}"
+                    text = f"У Вас новое сообщение из ВК\nОт: {message_data['from_id']}\n{message_data.get('text', '')}"
 
                     asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=full_text),
+                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text),
                         loop
                     )
 
@@ -178,7 +170,7 @@ def main():
     application.add_handler(CallbackQueryHandler(show_latest_messages, pattern="^latest_messages$"))
     application.add_handler(CallbackQueryHandler(show_friends, pattern="^friends_page_"))
     application.add_handler(CallbackQueryHandler(open_dialog, pattern="^open_dialog_"))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.DOCUMENT, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.ATTACHMENT, handle_message))
 
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
