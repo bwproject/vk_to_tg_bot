@@ -21,9 +21,8 @@ load_dotenv()
 
 VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
+if not all([VK_USER_TOKEN, TELEGRAM_TOKEN]):
     raise ValueError("❌ Не все переменные окружения заданы!")
 
 # Инициализация VK API
@@ -47,29 +46,41 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    messages = vk.messages.getConversations(count=5)
-    msg_list = messages.get("items", [])
+    try:
+        # Запрос последних сообщений
+        messages = vk.messages.getConversations(count=5)
+        msg_list = messages.get("items", [])
 
-    if not msg_list:
-        await query.edit_message_text("❌ Нет новых сообщений.")
-        return
+        if not msg_list:
+            await query.edit_message_text("❌ Нет новых сообщений.")
+            return
 
-    text = "📩 Последние сообщения:\n"
-    keyboard = []
+        text = "📩 Последние сообщения:\n"
+        keyboard = []
 
-    for msg in msg_list:
-        last_message = msg["last_message"]
-        user_id = last_message["from_id"]
-        user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-        sender_name = f"{user_info['first_name']} {user_info['last_name']}"
-        
-        # Добавляем пометку, отвечено ли сообщение
-        read_status = "✅ Ответили" if last_message["read_state"] == 1 else "❌ Не отвечено"
-        
-        text += f"\n👤 {sender_name}: {last_message['text'][:50]}... ({read_status})"
-        keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+        for msg in msg_list:
+            last_message = msg.get("last_message", {})
+            if not last_message:
+                continue
 
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            user_id = last_message.get("from_id")
+            if not user_id:
+                continue
+
+            user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
+            sender_name = f"{user_info['first_name']} {user_info['last_name']}"
+            
+            # Добавляем пометку, отвечено ли сообщение
+            read_status = "✅ Ответили" if last_message.get("read_state") == 1 else "❌ Не отвечено"
+            
+            text += f"\n👤 {sender_name}: {last_message['text'][:50]}... ({read_status})"
+            keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logger.error(f"Ошибка при получении последних сообщений: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при загрузке последних сообщений.")
 
 async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Выводит список друзей с пагинацией"""
@@ -139,7 +150,7 @@ def vk_listener(loop):
                     text = message_data.get('text', '')
 
                     asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(TELEGRAM_CHAT_ID, text=f"📨 {text}"),
+                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 {text}"),
                         loop
                     )
 
