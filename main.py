@@ -1,93 +1,123 @@
-import logging
-import json
 import vk_api
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-
-# Настройки VK
-VK_TOKEN = "ВАШ_ТОКЕН_VK"
-TELEGRAM_BOT_TOKEN = "ВАШ_ТОКЕН_TELEGRAM"
-AUTHORIZED_TELEGRAM_USER_ID = "ВАШ_ID_В_TG"
+from vk_api.longpoll import VkLongPoll, VkEventType
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+import asyncio
+import threading
+import os
+import requests
+import logging
+from datetime import datetime
+import pytz
+from dotenv import load_dotenv
+from collections import OrderedDict
 
 # Настройка логирования
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Авторизация в VK
-vk_session = vk_api.VkApi(token=VK_TOKEN)
+load_dotenv()
+
+# Конфигурация
+VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+AUTHORIZED_TELEGRAM_USER_ID = os.getenv("AUTHORIZED_TELEGRAM_USER_ID")
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
+
+# Инициализация VK API
+vk_session = vk_api.VkApi(token=VK_USER_TOKEN)
 vk = vk_session.get_api()
+longpoll = VkLongPoll(vk_session)
 
-# Запуск Telegram-бота
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+class DialogManager:
+    def __init__(self):
+        self.dialogs = OrderedDict()
+        self.selected_dialogs = {}
+        self.selected_friends = {}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает команду /start"""
-    await update.message.reply_text("👋 Привет! Я бот для пересылки сообщений между VK и Telegram.")
+    def select_dialog(self, telegram_user_id, vk_user_id):
+        self.selected_dialogs[telegram_user_id] = vk_user_id
 
-async def get_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Получает список друзей из ВК и отправляет в Telegram"""
-    try:
-        user_id = update.effective_user.id
-        if str(user_id) != AUTHORIZED_TELEGRAM_USER_ID:
-            await update.message.reply_text("⛔ У вас нет доступа к этой команде!")
-            return
+    def get_selected(self, telegram_user_id):
+        return self.selected_dialogs.get(telegram_user_id)
 
-        friends = vk.friends.get(order="hints", count=50, fields="first_name,last_name")["items"]
+dialog_manager = DialogManager()
 
-        if not friends:
-            await update.message.reply_text("🤷 У вас нет друзей в VK.")
-            return
+async def send_to_telegram(text, attachments=None):
+    """Отправляет сообщение и вложения в Telegram."""
+    await application.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+    
+    if attachments:
+        for attach in attachments:
+            await application.bot.send_document(chat_id=TELEGRAM_CHAT_ID, document=attach)
 
-        buttons = []
-        for friend in friends:
-            friend_id = friend["id"]
-            name = f"{friend.get('first_name', 'Неизвестно')} {friend.get('last_name', '')}"
-            buttons.append([InlineKeyboardButton(name, callback_data=f"write_{friend_id}")])
+def vk_listener(loop):
+    """Слушает новые сообщения и посты из VK."""
+    for event in longpoll.listen():
+        if event.type == VkEventType.MESSAGE_NEW and event.to_me:
+            asyncio.run_coroutine_threadsafe(
+                send_to_telegram(f"📩 Сообщение от {event.user_id}:\n{event.text}"), loop
+            )
+        
+        elif event.type == VkEventType.WALL_POST_NEW:
+            post = event.raw['object']
+            text = post.get("text", "")
+            owner_id = post["owner_id"]
+            post_url = f"https://vk.com/wall{owner_id}_{post['id']}"
+            msg = f"📝 Новый пост:\n{text}\n\n🔗 {post_url}"
+            asyncio.run_coroutine_threadsafe(send_to_telegram(msg), loop)
 
-        keyboard = InlineKeyboardMarkup(buttons)
-        await update.message.reply_text("👥 Ваши друзья:", reply_markup=keyboard)
+async def show_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выводит список друзей и кнопки для выбора."""
+    friends = vk.friends.get(order="hints", fields="first_name,last_name")
+    friends_list = friends.get("items", [])
 
-    except Exception as e:
-        logger.error(f"Ошибка получения друзей: {e}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка при получении друзей.")
+    if not friends_list:
+        await update.message.reply_text("❌ У вас нет друзей в VK.")
+        return
 
-async def handle_friend_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает выбор друга для начала диалога"""
+    keyboard = [
+        [InlineKeyboardButton(f"{f['first_name']} {f['last_name']}", callback_data=f"friend_{f['id']}")]
+        for f in friends_list[:10]
+    ]
+
+    await update.message.reply_text("👥 Выберите друга для начала диалога:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатия кнопок (выбор друга)."""
     query = update.callback_query
     await query.answer()
 
-    friend_id = query.data.replace("write_", "")
-    context.user_data["selected_friend_id"] = friend_id
+    if query.data.startswith("friend_"):
+        user_id = int(query.data.split("_")[1])
+        dialog_manager.select_dialog(str(update.effective_user.id), user_id)
+        await query.edit_message_text(f"✅ Выбран друг {user_id}. Теперь можно писать ему сообщения.")
 
-    await query.message.reply_text(f"📝 Теперь вы можете написать @id{friend_id} (VK). Отправьте сообщение:")
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сообщение выбранному другу."""
+    user_id = str(update.effective_user.id)
+    selected_vk_id = dialog_manager.get_selected(user_id)
 
-async def send_message_to_friend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение выбранному другу в VK"""
-    user_id = update.effective_user.id
-    if str(user_id) != AUTHORIZED_TELEGRAM_USER_ID:
-        await update.message.reply_text("⛔ У вас нет доступа к этой команде!")
+    if not selected_vk_id:
+        await update.message.reply_text("⚠ Сначала выберите друга командой /friends.")
         return
 
-    friend_id = context.user_data.get("selected_friend_id")
-    if not friend_id:
-        await update.message.reply_text("⚠️ Сначала выберите друга командой /friends!")
-        return
+    vk.messages.send(user_id=selected_vk_id, message=update.message.text, random_id=0)
+    await update.message.reply_text("✅ Сообщение отправлено.")
 
-    text = update.message.text
-    try:
-        vk.messages.send(user_id=friend_id, message=text, random_id=0)
-        await update.message.reply_text(f"✅ Сообщение отправлено @id{friend_id} (VK)")
-    except Exception as e:
-        logger.error(f"Ошибка отправки сообщения: {e}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка отправки сообщения.")
+def main():
+    global application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-# Регистрация команд в Telegram-боте
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("friends", get_friends))
-application.add_handler(CallbackQueryHandler(handle_friend_selection, pattern=r"write_\d+"))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, send_message_to_friend))
+    application.add_handler(CommandHandler("friends", show_friends))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT, handle_message))
 
-# Запуск бота
-if __name__ == "__main__":
-    logger.info("Бот запущен!")
+    loop = asyncio.get_event_loop()
+    threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
+
     application.run_polling()
+
+if __name__ == "__main__":
+    main()
