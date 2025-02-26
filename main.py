@@ -1,31 +1,24 @@
 import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram import Update
+from telegram.ext import Application, ContextTypes
 import asyncio
 import threading
-from dotenv import load_dotenv
 import os
 import requests
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import time
 
 # Настройка логирования
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("bot_debug.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+# Загрузка переменных окружения
+from dotenv import load_dotenv
 load_dotenv()
 
-# Конфигурация
 VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,7 +27,7 @@ TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
 
 # Проверка переменных окружения
 if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, AUTHORIZED_TELEGRAM_USER_ID]):
-    raise ValueError("Не все обязательные переменные окружения заданы в .env!")
+    raise ValueError("Не все переменные окружения заданы!")
 
 # Инициализация VK
 vk_session = vk_api.VkApi(token=VK_USER_TOKEN)
@@ -44,8 +37,8 @@ longpoll = VkLongPoll(vk_session)
 class BotStats:
     def __init__(self):
         self.start_time = datetime.now(pytz.timezone(TIMEZONE))
-        self.last_message_time = None
         self.message_count = 0
+        self.post_count = 0
 
 bot_stats = BotStats()
 
@@ -90,7 +83,6 @@ async def send_media(media_type, url, caption):
 async def forward_to_telegram(user_id, text, attachments):
     """Пересылает сообщение и вложения из ВК в Telegram"""
     try:
-        bot_stats.last_message_time = datetime.now(pytz.timezone(TIMEZONE))
         bot_stats.message_count += 1
 
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
@@ -107,7 +99,7 @@ async def forward_to_telegram(user_id, text, attachments):
                 sizes = media.get('sizes', [])
                 media_url = max(sizes, key=lambda x: x.get('width', 0)).get('url', '')
 
-            elif attach_type in ['doc', 'audio']:
+            elif attach_type in ['doc', 'audio', 'video']:
                 media_url = media.get('url', '')
 
             elif attach_type == 'audio_message':
@@ -123,8 +115,48 @@ async def forward_to_telegram(user_id, text, attachments):
     except Exception as e:
         logger.error(f"Ошибка пересылки: {e}", exc_info=True)
 
+async def forward_post_to_telegram(post):
+    """Пересылает новый пост из VK в Telegram"""
+    try:
+        bot_stats.post_count += 1
+
+        owner_id = post['owner_id']
+        post_id = post['id']
+        post_link = f"https://vk.com/wall{owner_id}_{post_id}"
+        text = post.get('text', '')
+
+        message_text = f"📢 Новый пост:\n{text}\n🔗 [Ссылка на пост]({post_link})"
+        await application.bot.send_message(TELEGRAM_CHAT_ID, text=message_text, parse_mode="Markdown")
+
+        attachments = post.get('attachments', [])
+        for attach in attachments:
+            attach_type = attach['type']
+            media = attach[attach_type]
+
+            if attach_type == 'photo':
+                sizes = media.get('sizes', [])
+                media_url = max(sizes, key=lambda x: x.get('width', 0)).get('url', '')
+
+            elif attach_type in ['doc', 'audio', 'video']:
+                media_url = media.get('url', '')
+
+            elif attach_type == 'link':
+                media_url = media.get('url', '')
+                await application.bot.send_message(TELEGRAM_CHAT_ID, text=f"🔗 [Ссылка]({media_url})", parse_mode="Markdown")
+                continue
+
+            else:
+                logger.warning(f"Неизвестный тип вложения в посте: {attach_type}")
+                continue
+
+            if media_url:
+                await send_media(attach_type, media_url, "Вложение из поста")
+
+    except Exception as e:
+        logger.error(f"Ошибка пересылки поста: {e}", exc_info=True)
+
 def vk_listener(loop):
-    """Слушает новые сообщения из VK"""
+    """Слушает события из VK"""
     while True:
         try:
             for event in longpoll.listen():
@@ -139,29 +171,21 @@ def vk_listener(loop):
                         forward_to_telegram(user_id, text, attachments),
                         loop
                     )
+
+                elif event.type == VkEventType.WALL_POST_NEW:
+                    post_data = event.raw
+                    asyncio.run_coroutine_threadsafe(
+                        forward_post_to_telegram(post_data),
+                        loop
+                    )
+
         except Exception as e:
             logger.error(f"Ошибка в VK listener: {e}")
             time.sleep(5)
 
-async def update_status_task(context: ContextTypes.DEFAULT_TYPE):
-    """Обновляет статус ВК"""
-    try:
-        uptime = datetime.now(pytz.timezone(TIMEZONE)) - bot_stats.start_time
-        days, seconds = uptime.days, uptime.seconds
-        hours, minutes = seconds // 3600, (seconds % 3600) // 60
-
-        status_text = f"⌛ Бот работает: {days}д {hours}ч {minutes}м | 📨 Сообщений: {bot_stats.message_count}"
-        vk.status.set(text=status_text)
-        logger.info(f"Обновлен статус ВК: {status_text}")
-
-    except Exception as e:
-        logger.error(f"Ошибка обновления статуса: {e}")
-
 def main():
     global application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    application.job_queue.run_repeating(update_status_task, interval=300, first=5)
 
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
