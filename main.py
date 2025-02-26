@@ -56,12 +56,14 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = "📩 Последние сообщения:\n"
     keyboard = []
+    skipped_count = 0  # Счётчик пропущенных сообщений без peer_id
 
     for msg in msg_list:
         last_message = msg["last_message"]
 
         # Проверяем, есть ли ключ peer_id
         if 'peer_id' not in msg:
+            skipped_count += 1
             continue  # Пропускаем сообщение, если peer_id нет
 
         peer_id = msg["peer_id"]
@@ -90,6 +92,10 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
         text += f"\n👤 От: {recipient_name}\n{last_message['text'][:50]}...\n{reply_status}\n{reply_text}"
         keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+
+    # Добавляем информацию о пропущенных сообщениях
+    if skipped_count > 0:
+        text += f"\n\n⚠ Пропущено {skipped_count} сообщений без peer_id."
 
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
