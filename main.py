@@ -64,7 +64,7 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             # Получаем имя отправителя
             user_id = last_message["from_id"]
             user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
-            sender_name = f"{user_info.get('first_name', 'Неизвестно')} {user_info.get('last_name', 'Неизвестно')}"
+            sender_name = f"{user_info.get('first_name', 'Неизвестно')} {user_info.get('last_name', 'Неизвестно')} ({user_id})"
 
             # Получаем имя получателя, если это личное сообщение
             recipient_name = "Неизвестно"
@@ -74,10 +74,16 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception as e:
                 logger.error(f"Ошибка при получении информации о получателе: {e}")
 
-            reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
-            reply_text = f"Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
+            text_message = last_message['text']
+            if 'attachments' in last_message:
+                text_message += "\n\n📎 Вложения: " + ", ".join([attachment['type'] for attachment in last_message['attachments']])
 
-            text += f"\n👤 От: {recipient_name}\n{last_message['text'][:50]}...\n{reply_status}\n{reply_text}"
+            reply_status = "✅ Ответили" if last_message.get("reply_message") else "❌ Не отвечено"
+            reply_text = f"\nОтвет: {last_message['reply_message']['text']}" if last_message.get("reply_message") else "Вы не ответили"
+            if 'attachments' in last_message.get("reply_message", {}):
+                reply_text += "\n📎 Вложения: " + ", ".join([attachment['type'] for attachment in last_message['reply_message']['attachments']])
+
+            text += f"\n👤 От: {recipient_name}\nТекст: {text_message}\n{reply_status}\n{reply_text}"
             keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
 
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
