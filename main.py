@@ -21,7 +21,7 @@ load_dotenv()
 
 VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "Отправлено из Telegram")
+MESSAGE_SIGNATURE = os.getenv("MESSAGE_SIGNATURE", "Отправлено из Telegram")  # Подпись
 
 if not all([VK_USER_TOKEN, TELEGRAM_TOKEN]):
     raise ValueError("❌ Не все переменные окружения заданы!")
@@ -59,12 +59,17 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     for msg in msg_list:
         last_message = msg["last_message"]
+
+        # Проверяем, есть ли ключ peer_id
+        if 'peer_id' not in msg:
+            continue  # Пропускаем сообщение, если peer_id нет
+
+        peer_id = msg["peer_id"]
         user_id = last_message["from_id"]
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
         sender_name = f"{user_info['first_name']} {user_info['last_name']}"
 
         # Получаем имя получателя в зависимости от типа сообщения
-        peer_id = msg["peer_id"]
         if peer_id > 2e9:  # Это группа или чат
             try:
                 chat_info = vk.messages.getConversationById(peer_id=peer_id)
@@ -139,9 +144,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠ Сначала выберите собеседника через /start.")
         return
 
-    message_text = f"{update.message.text}\n\n📨 {MESSAGE_SIGNATURE}"
+    message_text = f"{update.message.text}\n\n{MESSAGE_SIGNATURE}"
     
-    vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
+    # Проверяем, есть ли вложения и передаем их
+    if update.message.photo:
+        photo = update.message.photo[-1].file_id
+        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0, attachment=photo)
+    elif update.message.document:
+        document = update.message.document.file_id
+        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0, attachment=document)
+    else:
+        vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
+
     await update.message.reply_text("✅ Сообщение отправлено.")
 
 def vk_listener(loop):
@@ -154,9 +168,9 @@ def vk_listener(loop):
                     message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
 
                     text = message_data.get('text', '')
-
+                    # Отправка нового сообщения в Telegram
                     asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 У Вас новое сообщение из ВК\nОт: {sender_name}\n{message_data['text'][:50]}..."),
+                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"У Вас новое сообщение из ВК\nОт: {user_id}\n{message_data.get('text', '')}"),
                         loop
                     )
 
