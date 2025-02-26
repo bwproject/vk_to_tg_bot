@@ -21,8 +21,9 @@ load_dotenv()
 
 VK_USER_TOKEN = os.getenv("VK_USER_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not all([VK_USER_TOKEN, TELEGRAM_TOKEN]):
+if not all([VK_USER_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
     raise ValueError("❌ Не все переменные окружения заданы!")
 
 # Инициализация VK API
@@ -62,13 +63,11 @@ async def show_latest_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
         sender_name = f"{user_info['first_name']} {user_info['last_name']}"
         
-        text += f"\n👤 {sender_name}: {last_message['text'][:50]}..."
-        
-        # Проверка ответа на сообщение
-        reply_text = last_message.get("reply_message", {}).get("text", "❌ Не отвечено")
-        text += f"\n📝 Ответ: {reply_text if reply_text != '❌ Не отвечено' else '❌ Не отвечено'}"
+        answered = "✅ Отвечено" if last_message.get("reply_message") else "❌ Не отвечено"
+        reply_text = f"\n✉ Ответ: {last_message['reply_message']['text']}" if last_message.get("reply_message") else ""
 
-        keyboard.append([InlineKeyboardButton(sender_name, callback_data=f"open_dialog_{user_id}")])
+        text += f"\n👤 От: {sender_name}\n{last_message['text'][:50]}...\n{answered}{reply_text}\n"
+        keyboard.append([InlineKeyboardButton(f"🗨 {sender_name}", callback_data=f"open_dialog_{user_id}")])
 
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -115,7 +114,7 @@ async def open_dialog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"✅ Вы выбрали собеседника ID {vk_user_id}. Теперь можно писать ему сообщения.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение выбранному собеседнику в VK с подписью"""
+    """Отправляет сообщение и вложения в VK"""
     user_id = str(update.effective_user.id)
     vk_user_id = selected_friends.get(user_id)
 
@@ -125,22 +124,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message_text = f"{update.message.text}\n\n📨 Отправлено с помощью Telegram"
     
-    # Отправка текстового сообщения
-    vk.messages.send(user_id=vk_user_id, message=message_text, random_id=0)
-
-    # Обработка вложений
+    attachments = []
     if update.message.photo:
-        photo = update.message.photo[-1].file_id
-        file = await application.bot.get_file(photo)
-        file_path = file.file_path
-        vk.messages.send(user_id=vk_user_id, attachment=f"photo{file_path}", random_id=0)
+        file_id = update.message.photo[-1].file_id
+        file = await context.bot.get_file(file_id)
+        attachments.append(file.file_path)
 
     if update.message.document:
-        document = update.message.document.file_id
-        file = await application.bot.get_file(document)
-        file_path = file.file_path
-        vk.messages.send(user_id=vk_user_id, attachment=f"doc{file_path}", random_id=0)
+        file_id = update.message.document.file_id
+        file = await context.bot.get_file(file_id)
+        attachments.append(file.file_path)
 
+    vk.messages.send(user_id=vk_user_id, message=message_text, attachment=",".join(attachments), random_id=0)
     await update.message.reply_text("✅ Сообщение отправлено.")
 
 def vk_listener(loop):
@@ -153,9 +148,13 @@ def vk_listener(loop):
                     message_data = vk.messages.getHistory(user_id=user_id, count=1)['items'][0]
 
                     text = message_data.get('text', '')
+                    user_info = vk.users.get(user_ids=user_id, fields="first_name,last_name")[0]
+                    sender_name = f"{user_info['first_name']} {user_info['last_name']}"
+
+                    full_message = f"📩 У Вас новое сообщение из ВК\n👤 От: {sender_name}\n✉ {text}"
 
                     asyncio.run_coroutine_threadsafe(
-                        application.bot.send_message(os.getenv("TELEGRAM_CHAT_ID"), text=f"📨 У вас новое сообщение из ВК\nОт: {text}"),
+                        application.bot.send_message(TELEGRAM_CHAT_ID, text=full_message),
                         loop
                     )
 
@@ -171,7 +170,7 @@ def main():
     application.add_handler(CallbackQueryHandler(show_latest_messages, pattern="^latest_messages$"))
     application.add_handler(CallbackQueryHandler(show_friends, pattern="^friends_page_"))
     application.add_handler(CallbackQueryHandler(open_dialog, pattern="^open_dialog_"))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document, handle_message))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.ATTACHMENT, handle_message))
 
     loop = asyncio.get_event_loop()
     threading.Thread(target=vk_listener, args=(loop,), daemon=True).start()
